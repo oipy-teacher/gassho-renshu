@@ -1,0 +1,77 @@
+# 合唱パート練習
+
+合唱の自分のパートを、iPad で 1 人で練習するための Web アプリです。
+楽譜のファイル（MusicXML）を読み込み、お手本（録音のグランドピアノ）を聞いて、自分で歌い、音程を採点します。
+ビルドの工程はありません（`index.html` と `css/`・`js/`・`audio/` をそのまま置けば動きます）。
+
+- 交互練習（お手本を聞く → カウント → 歌う。イヤホンなしで使えます）／通し（試験的）／聞くだけ／聞き直す
+- 指で左右に動かして、始める位置をピンポイントで選べます（拍と音符の頭に吸着・ミニマップ・練習番号・歌詞でさがす）
+- 採点は音程が中心（±25セント以内で◎、±50セント以内で○）。講評は決まったルールで日本語の文を作ります（AI の API は使いません）
+
+## 楽譜は同梱していません
+
+このアプリには、合唱曲の楽譜・歌詞は入っていません。
+使う人が、配られた楽譜のファイル（`.musicxml` / `.mxl` / `.xml`）を自分の端末で選んで読み込みます。
+読み込んだ楽譜は、その端末のブラウザの保存領域（IndexedDB）にだけ残ります。
+
+同梱しているのは、動作確認用に自作した短いオリジナルの曲（`test/fixtures/renshu-4sei.musicxml`・「テスト用の楽譜で試す」ボタン用）だけです。
+
+## 声と録音について
+
+- マイクの音は、その場で音の高さに変えて採点に使います。どこにも送信しません
+- 「聞き直す」ための録音（歌う区間の声と、音程の線・採点）は、その端末の IndexedDB にだけ保存します。
+  楽譜ごとに新しい 5 回分まで残し、それより古いものは自動で消えます。「設定」の「録音を残す」で止められます
+- マイクは https か localhost で開いたときだけ使えます（GitHub Pages は https なので使えます）
+
+## ピアノ音源のクレジット
+
+ピアノの音は **Salamander Grand Piano**（Yamaha C5）です。
+
+- 作者: **Alexander Holm**
+- ライセンス: **Creative Commons Attribution 3.0（CC BY 3.0）** — https://creativecommons.org/licenses/by/3.0/
+- 使った版: FreePats プロジェクトの SF2 版（SalamanderGrandPiano-V3+20200602）— https://freepats.zenvoid.org/Piano/acoustic-grand-piano.html
+- 変更点: 30 鍵（A0 から短3度おき）× 強弱 3 段を 1 音ずつ書き出し、AAC（m4a）にしました。
+  アプリは、読み込み時に AAC の先頭の待ち時間を取り除き、最大 ±1 半音ずらして鳴らし、
+  鍵を離したあとの減り方に SF2 から実測したカーブを当て、ごく控えめな響きを足しています。
+  詳しくは `audio/piano/README.txt`
+
+同じ表記は、アプリの「設定」の下のクレジットと `LICENSE.txt` にもあります。
+
+## 公開のしかた（GitHub Pages）
+
+公開するのは `publish-files.txt` に書いたファイルだけです（テスト用のスクリプトや作業用のファイルは置きません）。
+
+1. テストと、公開してよいかの確認を通す（このフォルダで）
+
+   ```bash
+   npm test                        # 単体テスト
+   node test/publish-check.mjs     # 公開するファイルの一覧を作り直し、楽譜・歌詞・録音・個人名・APIキーが無いことを確かめる
+   ```
+
+   `publish-check` が 1 つでも ✗ を出したら、公開しません。
+
+2. 公開用のリポジトリ（例: `gassho-renshu`）の作業フォルダに、一覧のファイルだけを写す
+
+   ```bash
+   rsync -av --files-from=publish-files.txt ./ ../gassho-renshu-pages/
+   ```
+
+3. 公開用のリポジトリで commit して push し、GitHub の Settings → Pages で `main` ブランチのルートを公開する
+
+4. 公開された URL（`https://<ユーザー名>.github.io/gassho-renshu/`）を iPad の Safari で開き、
+   楽譜を読み込む → パートを選ぶ → 交互練習 → 講評 → 聞き直す まで動くことを確かめる
+
+すべて相対パスで書いてあるので、サブフォルダ（`/gassho-renshu/`）に置いても動きます。
+
+## 開発者向け
+
+| 目的 | コマンド |
+|---|---|
+| 手元で開く | `python3 -m http.server 8765 --bind 127.0.0.1` → http://127.0.0.1:8765/ |
+| 単体テスト | `npm test` |
+| ブラウザでの通し確認 | `node test/browser-check.mjs`（`SCORE=楽譜のパス PART=パート名 VW=1024 VH=768` で変えられる） |
+| 画面の重なり・はみ出し | `node test/layout-check.mjs` |
+| 練習番号つきの楽譜での確認 | `SCORE=楽譜のパス PART=パート名 node test/score-check.mjs` |
+| 公開してよいかの確認 | `node test/publish-check.mjs` |
+
+外部ライブラリは使っていません（zip の展開・XML の読み取り・音程検出・録音の圧縮は自前の実装です）。

@@ -1,0 +1,14 @@
+合唱パート練習 — 同梱物のライセンス
+=====================================
+
+■ ピアノの音（audio/piano/*.m4a）
+  Salamander Grand Piano by Alexander Holm — CC BY 3.0
+  https://creativecommons.org/licenses/by/3.0/
+  FreePats プロジェクトの SF2 版（SalamanderGrandPiano-V3+20200602）から 1 音ずつ書き出したもの。
+  作り方と変更点は audio/piano/README.txt。
+
+■ テスト用の楽譜（test/fixtures/）
+  テストのために自作したオリジナルの短い曲です。
+
+■ プログラム（js/・css/・index.html）
+  外部ライブラリは使っていません（zip展開・XML読み取り・音程検出は自前の実装です）。

@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="format-detection" content="telephone=no">
+<meta name="theme-color" content="#27463c">
+<title>合唱パート練習</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<!-- 1. はじめの画面 -->
+<section id="screen-home" class="screen" aria-labelledby="home-title">
+  <div class="home">
+    <div class="home-head">
+      <h1 id="home-title">合唱パート練習</h1>
+      <p class="lead">楽譜のファイルを読み込んで、自分のパートを1人で練習します。</p>
+    </div>
+
+    <div class="home-grid">
+      <div class="home-main">
+        <label class="btn btn-primary btn-xl file-btn">
+          <input id="file-input" type="file" hidden>
+          楽譜ファイルを選ぶ
+        </label>
+        <p class="note">使えるファイル: <b>.musicxml</b>・<b>.mxl</b>・<b>.xml</b>（MusicXML）。<br>
+          Google Classroom で配られたファイルは、いったん「ファイル」アプリに保存してから選んでください。</p>
+        <p id="home-error" class="error" role="alert" hidden></p>
+        <button id="btn-sample" class="btn btn-quiet" type="button">テスト用の楽譜で試す</button>
+      </div>
+
+      <div class="home-saved">
+        <h2>このiPadに保存した楽譜</h2>
+        <ul id="saved-list" class="saved-list"></ul>
+        <p id="saved-empty" class="note">まだありません。読み込んだ楽譜はここに残ります。</p>
+      </div>
+    </div>
+
+    <ul class="promise">
+      <li>楽譜も声も、この端末の中だけで使います。聞き直し用の録音は、このiPadの中だけに保存します（送信しません。「設定」で止められます）。</li>
+      <li id="insecure-note" hidden>このページは https でも localhost でもないため、マイクが使えません。配布されたURL（https:// で始まるもの）から開いてください。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 2. パートを選ぶ -->
+<section id="screen-parts" class="screen" hidden aria-labelledby="parts-title">
+  <header class="bar">
+    <button class="btn btn-bar" type="button" data-go="home">← 楽譜をえらびなおす</button>
+    <div class="bar-title"><span class="bar-kicker">パートをえらぶ</span><span id="parts-title" class="bar-song"></span></div>
+    <button class="btn btn-bar" type="button" data-open="sheet-settings">設定</button>
+  </header>
+  <div class="parts">
+    <ul id="parts-warnings" class="warnings"></ul>
+    <p class="parts-lead">自分が歌うパートを選んでください。</p>
+    <div id="track-list" class="track-list"></div>
+    <p id="piano-note" class="note" hidden></p>
+    <p id="prep" class="prep" hidden><span id="prep-text">ピアノの音を読み込んでいます</span><span class="prep-bar"><i id="prep-fill"></i></span></p>
+  </div>
+</section>
+
+<!-- 3. 練習 -->
+<section id="screen-practice" class="screen" hidden aria-label="練習">
+  <header class="bar">
+    <button class="btn btn-bar" type="button" data-go="parts">← パート</button>
+    <div class="bar-title">
+      <span class="bar-kicker" id="pr-part"></span>
+      <span class="bar-song" id="pr-song"></span>
+    </div>
+    <button class="btn btn-bar" type="button" data-open="sheet-settings">設定</button>
+  </header>
+
+  <div class="phase" aria-live="polite">
+    <ol id="phase-steps" class="steps">
+      <li data-p="listen">聞く</li>
+      <li data-p="count">数える</li>
+      <li data-p="sing">歌う</li>
+      <li data-p="result">結果</li>
+    </ol>
+    <p id="phase-msg" class="phase-msg"></p>
+    <div class="meter" title="マイクの音の大きさ（採点には使いません）">
+      <span class="meter-label">マイク</span>
+      <span class="meter-bar"><i id="meter-fill"></i><b class="meter-th"></b></span>
+    </div>
+  </div>
+
+  <!-- 曲全体の縮図 -->
+  <div class="mini-wrap">
+    <canvas id="minimap" aria-label="曲全体。指でなぞると大きく移動できます"></canvas>
+    <div class="search">
+      <input id="lyric-search" type="search" placeholder="歌詞でさがす" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="歌詞でさがす">
+      <ul id="search-results" class="search-results" hidden></ul>
+    </div>
+  </div>
+
+  <!-- 練習番号へジャンプ（楽譜に練習番号があるときだけ） -->
+  <div class="finder" id="finder" hidden>
+    <nav class="marks" id="marks" aria-label="練習番号へジャンプ" hidden>
+      <span class="marks-label">練習番号</span>
+      <div class="marks-list" id="marks-list"></div>
+      <button type="button" class="btn btn-quiet btn-small" id="btn-mark-range">この番号を範囲に</button>
+    </nav>
+  </div>
+
+  <div class="board-wrap">
+    <div class="board">
+      <canvas id="roll" aria-label="お手本の音符と自分の声の高さ。指で左右に動かすと、始める位置を選べます"></canvas>
+      <div id="seg-card" class="seg-card" hidden>
+        <p class="seg-card-label" id="seg-label"></p>
+        <p class="seg-card-score"><b id="seg-score"></b><span>点</span></p>
+        <p class="seg-card-grades" id="seg-grades"></p>
+        <p class="seg-card-comment" id="seg-comment"></p>
+        <div class="seg-card-actions">
+          <button class="btn btn-quiet" type="button" id="btn-seg-again">もう一度</button>
+          <button class="btn btn-primary" type="button" id="btn-seg-next">次へ</button>
+        </div>
+        <span class="seg-card-timer"><i id="seg-timer"></i></span>
+      </div>
+    </div>
+    <div class="tray" aria-label="色の見かた">
+      <span class="chalk chalk-cursor"></span><span>始める位置</span>
+      <span class="chalk chalk-white"></span><span>お手本</span>
+      <span class="chalk chalk-yellow"></span><span>あなたの声</span>
+      <span class="chalk chalk-sky"></span><span>オクターブ違い</span>
+      <span class="tray-sep"></span>
+      <span class="g g-great">◎</span><span>±25セント</span>
+      <span class="g g-good">○</span><span>±50</span>
+      <span class="g g-fair">△</span><span>±100</span>
+      <span class="g g-miss">×</span><span>それ以上</span>
+    </div>
+  </div>
+
+  <div class="deck">
+    <div class="deck-col">
+      <div class="seg" role="radiogroup" aria-label="練習のしかた" id="mode-seg">
+        <button type="button" role="radio" data-mode="alt">交互練習</button>
+        <button type="button" role="radio" data-mode="through">通し<small>（試験的）</small></button>
+        <button type="button" role="radio" data-mode="listen">聞くだけ</button>
+        <button type="button" role="radio" data-mode="review" id="mode-review">聞き直す</button>
+      </div>
+      <p class="mode-help" id="mode-help"></p>
+      <div class="review-panel" id="review-panel" hidden>
+        <div class="review-row">
+          <select id="take-select" aria-label="聞き直す録音"></select>
+          <button type="button" class="btn btn-quiet btn-small" data-open="sheet-takes">一覧</button>
+        </div>
+        <div class="review-row">
+          <label class="check"><input type="checkbox" id="opt-review-piano"> ピアノも鳴らす</label>
+          <span class="balance"><span>声</span><input id="review-balance" type="range" min="0" max="100" step="5" aria-label="声とピアノの音量のバランス"><span>ピアノ</span></span>
+        </div>
+      </div>
+      <div class="field field-row" id="field-seglen">
+        <span class="field-label">区切り</span>
+        <div class="seg seg-small" role="radiogroup" aria-label="何小節ずつ" id="seglen-seg">
+          <button type="button" role="radio" data-len="1">1小節</button>
+          <button type="button" role="radio" data-len="2">2小節</button>
+          <button type="button" role="radio" data-len="4">4小節</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="deck-col deck-mid">
+      <div class="range-line">
+        <span class="field-label">練習範囲</span>
+        <output id="range-text" class="range-text"></output>
+        <button type="button" class="btn btn-quiet btn-small" id="btn-range-all">全部</button>
+      </div>
+      <div class="nudge" role="group" aria-label="始める位置を動かす">
+        <button type="button" class="nudge-btn" data-nudge="m-1" aria-label="1小節もどる">◀◀<small>小節</small></button>
+        <button type="button" class="nudge-btn" data-nudge="b-1" aria-label="1拍もどる">◀<small>拍</small></button>
+        <button type="button" class="nudge-btn" data-nudge="b+1" aria-label="1拍すすむ">▶<small>拍</small></button>
+        <button type="button" class="nudge-btn" data-nudge="m+1" aria-label="1小節すすむ">▶▶<small>小節</small></button>
+        <button type="button" class="btn edge-btn" id="btn-from">ここから</button>
+        <button type="button" class="btn edge-btn" id="btn-to">ここまで</button>
+      </div>
+      <div class="field field-tempo">
+        <label class="field-label" for="tempo">テンポ <output id="tempo-out"></output></label>
+        <input id="tempo" type="range" min="50" max="100" step="5">
+      </div>
+    </div>
+
+    <div class="deck-go">
+      <button type="button" class="btn go" id="btn-go">はじめる</button>
+      <button type="button" class="btn btn-quiet" id="btn-report" hidden>講評を見る</button>
+      <button type="button" class="btn btn-quiet" data-open="sheet-takes" id="btn-takes">録音の一覧</button>
+    </div>
+  </div>
+</section>
+
+<!-- 講評 -->
+<aside id="sheet-report" class="sheet" hidden aria-labelledby="report-title">
+  <div class="sheet-inner">
+    <header class="sheet-head">
+      <h2 id="report-title">講評</h2>
+      <button class="btn btn-quiet" type="button" data-close="sheet-report">閉じる</button>
+    </header>
+    <p class="report-range" id="report-range"></p>
+    <p class="report-score"><b id="report-score"></b><span>点</span></p>
+    <p class="report-grades" id="report-grades"></p>
+    <ul class="report-comments" id="report-comments"></ul>
+    <h3>小節ごと</h3>
+    <div class="measure-strip" id="measure-strip"></div>
+    <p class="note">小節をタップすると、そこだけ練習できます。</p>
+    <div id="weak-actions" class="weak-actions"></div>
+    <div id="report-take" class="report-take" hidden>
+      <p class="note" id="report-take-note"></p>
+      <button type="button" class="btn" id="btn-review-this">この回の録音を聞き直す</button>
+    </div>
+  </div>
+</aside>
+
+<!-- 聞き直し用の録音の一覧 -->
+<aside id="sheet-takes" class="sheet" hidden aria-labelledby="takes-title">
+  <div class="sheet-inner">
+    <header class="sheet-head">
+      <h2 id="takes-title">録音の一覧</h2>
+      <button class="btn btn-quiet" type="button" data-close="sheet-takes">閉じる</button>
+    </header>
+    <p class="note">録音はこのiPadの中だけに保存されます（送信しません）。楽譜ごとに新しい5回分まで残し、それより古いものは自動で消えます。</p>
+    <ul id="takes-list" class="takes-list"></ul>
+    <p id="takes-empty" class="note">まだ録音はありません。交互練習か通しで歌うと、ここに残ります。</p>
+    <button type="button" class="btn btn-quiet" id="btn-takes-clear">この楽譜の録音を全部消す</button>
+  </div>
+</aside>
+
+<!-- 設定 -->
+<aside id="sheet-settings" class="sheet" hidden aria-labelledby="settings-title">
+  <div class="sheet-inner">
+    <header class="sheet-head">
+      <h2 id="settings-title">設定</h2>
+      <button class="btn btn-quiet" type="button" data-close="sheet-settings">閉じる</button>
+    </header>
+    <div class="set-row"><label for="vol-mine">自分のパートの音量</label><input id="vol-mine" type="range" min="0" max="100" step="5"></div>
+    <div class="set-row"><label for="vol-others">ほかのパートの音量</label><input id="vol-others" type="range" min="0" max="100" step="5"></div>
+    <div class="set-row"><label for="vol-piano">ピアノ伴奏の音量</label><input id="vol-piano" type="range" min="0" max="100" step="5"></div>
+    <div class="set-row"><label for="vol-click">クリックの音量</label><input id="vol-click" type="range" min="0" max="100" step="5"></div>
+    <div class="set-row"><label><input type="checkbox" id="opt-record"> 録音を残す（聞き直し用。このiPadの中だけに保存します）</label></div>
+    <div class="set-row"><label><input type="checkbox" id="opt-listen"> 交互練習で、歌う前にお手本を聞く</label></div>
+    <div class="set-row"><label><input type="checkbox" id="opt-preroll"> 通しで、始める位置の1小節前から伴奏を流す（入りやすくなります）</label></div>
+    <div class="set-row"><label><input type="checkbox" id="opt-guide"> 通しで、自分のパートの音も鳴らす（マイクが拾いやすくなります）</label></div>
+    <div class="set-row"><label><input type="checkbox" id="opt-click-through"> 通しで、クリックを鳴らし続ける</label></div>
+    <div class="set-row" id="oct-row">
+      <span>自分のパートの高さ</span>
+      <div class="seg seg-small" role="radiogroup" id="oct-seg" aria-label="オクターブの補正">
+        <button type="button" role="radio" data-oct="-1">1オクターブ下</button>
+        <button type="button" role="radio" data-oct="0">楽譜どおり</button>
+        <button type="button" role="radio" data-oct="1">1オクターブ上</button>
+      </div>
+      <p class="note">楽譜の書き出し方によって、表示が1オクターブずれることがあります。そのときだけ変えてください。</p>
+    </div>
+    <div class="set-row">
+      <label for="latency">タイミングの補正 <output id="latency-out"></output></label>
+      <input id="latency" type="range" min="-150" max="300" step="10">
+      <p class="note">声の線がいつも音符より右（遅れ）に出るときは右へ。実機で合わせてください。</p>
+    </div>
+    <div class="set-row"><p class="note" id="mic-info">マイクはまだ使っていません。</p></div>
+
+    <h3>クレジット</h3>
+    <div class="set-row credit">
+      <p>ピアノの音: <b>Salamander Grand Piano</b>（Yamaha C5）by Alexander Holm ／ ライセンス <a href="https://creativecommons.org/licenses/by/3.0/deed.ja" target="_blank" rel="noopener noreferrer">CC BY 3.0</a>。
+        FreePats プロジェクトの SF2 版（V3+20200602）から、30鍵×強弱3段を1音ずつ書き出して使っています（AACに変換・先頭の待ち時間の除去・ごく控えめな響きの追加）。</p>
+    </div>
+  </div>
+</aside>
+
+<!-- マイクの説明（初回だけ） -->
+<div id="modal-mic" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="mic-title">
+  <div class="modal-card">
+    <h2 id="mic-title">マイクを使います</h2>
+    <p>声の高さ（音程）を調べるために、iPadのマイクを使います。このあと「マイクへのアクセス」をたずねられたら<b>「許可」</b>を押してください。</p>
+    <p class="note">声は送信しません。聞き直し用の録音は、このiPadの中だけに保存します（「設定」の「録音を残す」で止められます）。</p>
+    <button class="btn btn-primary btn-xl" type="button" id="btn-mic-ok">わかりました</button>
+  </div>
+</div>
+
+<div id="toast" class="toast" role="status" hidden></div>
+
+<noscript>このアプリを使うには JavaScript を有効にしてください。</noscript>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
