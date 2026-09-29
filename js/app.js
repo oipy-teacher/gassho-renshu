@@ -9,7 +9,8 @@ import { Minimap, hitEdge } from './minimap.js';
 import { store, hashText, listTakes, putTake, removeTake, clearTakes } from './store.js';
 import { ClipRecorder, makeTake, reviewFrames, reviewClips, adpcmDecode } from './recorder.js';
 import { sections, sectionOf } from './marks.js';
-import { mergeExpr, cueAt, entryHint, autoBreaths, snapToNoteHead, writeMarksToXml, DYN_PALETTE } from './expr.js';
+import { mergeExpr, cueAt, entryHint, autoBreaths, snapToNoteHead, writeMarksToXml, DYN_PALETTE, levelOf, judgeBreath, judgeWedge, judgeDyn, judgeTargets } from './expr.js';
+import { Fx } from './fx.js';
 import {
   beatGrid, buildSnaps, snapQ, measureIndexAt, stepBeat, stepMeasure, posLabel, endLabel,
   setRangeEdge, dragRangeEdge, segmentsFrom, countInBeats, Inertia, releaseVelocity, joinLyrics, searchLyrics,
@@ -26,6 +27,14 @@ const DEFAULTS = {
   record: true, reviewPiano: true, reviewBalance: 40, cues: true,
 };
 const settings = { ...DEFAULTS, ...readJSON('gassho-settings') };
+// 合図と演出: karaoke（カラオケ風・はで）／calm（しずか: 帯と小さな札だけ）／off（出さない）
+if (!['karaoke', 'calm', 'off'].includes(settings.fx)) {
+  const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  settings.fx = settings.cues === false ? 'off' : reduce ? 'calm' : 'karaoke';
+}
+const cuesOn = () => settings.fx !== 'off';
+const fx = new Fx();
+const fxSeen = { breath: null, flash: null, lastQ: -1e9 };
 function readJSON(k) { try { return JSON.parse(localStorage.getItem(k) || '{}') || {}; } catch (_) { return {}; } }
 function saveSettings() { try { localStorage.setItem('gassho-settings', JSON.stringify(settings)); } catch (_) { /* 保存できなくても動く */ } }
 
@@ -642,7 +651,7 @@ function syncControls() {
   $('vol-click').value = settings.volClick;
   $('latency').value = settings.latencyMs; $('latency-out').textContent = (settings.latencyMs > 0 ? '+' : '') + settings.latencyMs + 'ms';
   $('opt-listen').checked = settings.listen;
-  $('opt-cues').checked = settings.cues;
+  for (const b of $('fx-seg').children) b.setAttribute('aria-checked', String(b.dataset.fx === settings.fx));
   $('btn-expr').disabled = !!S.run;
   $('opt-guide').checked = settings.guide;
   $('opt-preroll').checked = settings.preroll;
@@ -707,7 +716,10 @@ bindRange('latency', 'latencyMs');
 $('latency').addEventListener('input', () => applyReviewOffset());
 const bindCheck = (id, key) => $(id).addEventListener('change', (e) => { settings[key] = e.target.checked; saveSettings(); });
 bindCheck('opt-listen', 'listen');
-$('opt-cues').addEventListener('change', (e) => { settings.cues = e.target.checked; saveSettings(); S.dirty = true; });
+$('fx-seg').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  settings.fx = b.dataset.fx; settings.cues = settings.fx !== 'off'; saveSettings(); syncControls();
+});
 bindCheck('opt-guide', 'guide');
 bindCheck('opt-preroll', 'preroll');
 bindCheck('opt-click-through', 'clickThrough');
@@ -749,6 +761,7 @@ function endQFor(q0) {
 function lastBeatQ() { return S.grid.length ? S.grid[S.grid.length - 1].q : 0; }
 
 async function startRun(opts = {}) {
+  fx.reset(); fxSeen.breath = null; fxSeen.flash = null; fxSeen.lastQ = -1e9;
   if (S.editing) { S.editing = false; S.pendingWedge = null; syncExprBar(); }
   await engine.init();
   applyGains();
@@ -872,6 +885,52 @@ function scheduleSegment() {
   run.ph = { listenStart: t, listenEnd, countStart, singStart, singEnd, beatSec: ci.beatSec, beats: ci.beats };
   run.cap = { from: singStart - 0.3, to: singEnd + 0.25, ctx0: singStart, sec0: seg.startSec, frames: [], recent: [] };
   run.evalAt = singEnd + 0.3 + latency() + 0.1;
+  prepJudges(run, seg);
+}
+
+// ---------------- 合図どおりに歌えたか（声で判定 → 演出とまとめ） ----------------
+const beatSecAt = (sec) => { const q = secToQ(sec); const m = S.measures[measureIndexAt(S.measures, q)]; return (m ? 4 / m.beatType : 1) * 60 / S.score.timeline.bpmAt(q); };
+const EMPTY_TALLY = () => ({ breath: [0, 0], wedge: [0, 0], dyn: [0, 0] });
+function prepJudges(run, seg) {
+  run.judge = cuesOn() ? { list: judgeTargets(roll.expr, seg.startSec, seg.noteEnd, beatSecAt), done: new Set() } : null;
+  run.segExpr = run.segExpr || new Map();
+  run.segExpr.set(run.segIdx, EMPTY_TALLY());
+}
+function checkJudges(run, final) {
+  const J = run.judge, cap = run.cap;
+  if (!J || !cap || !cap.frames.length) return;
+  const upTo = cap.frames[cap.frames.length - 1].sec;
+  const tally = run.segExpr.get(run.segIdx);
+  for (const t of J.list) {
+    if (J.done.has(t.key) || (!final && t.evalSec > upTo)) continue;
+    J.done.add(t.key);
+    const res = t.kind === 'breath' ? judgeBreath(cap.frames, t.zoneSec, t.sec, run.r, QUIET_DB)
+      : t.kind === 'wedge' ? judgeWedge(cap.frames, t.startSec, t.endSec, t.wedge, QUIET_DB)
+        : judgeDyn(cap.frames, t.sec, t.beatSec, t.from, t.to, QUIET_DB);
+    if (!res) continue;
+    tally[t.kind][1]++;
+    if (res.ok) tally[t.kind][0]++;
+    if (settings.fx === 'karaoke') fx.judge(performance.now(), t.kind, res.ok, t, fxBox());
+    else if (res.ok) toast(t.kind === 'breath' ? 'ナイス息継ぎ！' : '強弱、決まった！', 1200);
+  }
+}
+function exprText(t) {
+  if (!t) return '';
+  const parts = [];
+  if (t.breath[1]) parts.push(`息継ぎ ${t.breath[0]}/${t.breath[1]}`);
+  if (t.wedge[1]) parts.push(`だんだん ${t.wedge[0]}/${t.wedge[1]}`);
+  if (t.dyn[1]) parts.push(`強弱 ${t.dyn[0]}/${t.dyn[1]}`);
+  if (!parts.length) return '';
+  const ok = t.breath[0] + t.wedge[0] + t.dyn[0], all = t.breath[1] + t.wedge[1] + t.dyn[1];
+  return '歌い方：' + parts.join('・') + (ok === all ? '　全部決まった！' : '');
+}
+function sumTally(run) {
+  const out = EMPTY_TALLY();
+  for (const [i, t] of run.segExpr || []) {
+    if (!run.segResults.has(i)) continue;
+    for (const k of Object.keys(out)) { out[k][0] += t[k][0]; out[k][1] += t[k][1]; }
+  }
+  return out;
 }
 
 /** いまの区切りの録音と音程の線を、補正前の時刻にして控える（聞き直し用） */
@@ -904,6 +963,9 @@ function finishSegment() {
   $('seg-label').textContent = seg.label + (run.loop ? `（${run.round}回目）` : `（${run.segIdx + 1}/${run.segs.length}）`);
   $('seg-score').textContent = sum.score;
   $('seg-grades').textContent = gradeText(sum.gradeCount);
+  const et = exprText(run.segExpr && run.segExpr.get(run.segIdx));
+  $('seg-expr').textContent = et;
+  $('seg-expr').hidden = !et;
   $('seg-comment').textContent = sum.comments[1] || sum.comments[0] || '';
   const last = !run.loop && run.segIdx === run.segs.length - 1;
   $('btn-seg-next').textContent = last ? '講評へ' : run.loop ? 'もう一回' : '次へ';
@@ -933,6 +995,7 @@ function finishRun() {
   sum.rangeText = segs.length ? markLabel(segs[0].fromIdx, segs[segs.length - 1].toIdx) : '';
   sum.tempo = run.r;
   sum.modeText = run.kind === 'through' ? '通し（試験的）' : run.loop ? 'くり返し練習' : '交互練習';
+  sum.exprText = exprText(sumTally(run));
   sum.takeId = null;
   showReport(sum, true);
   saveTake(run, sum);
@@ -991,6 +1054,7 @@ function startThrough(q0, endQ) {
     cap: { from: playStart - 0.3, to: playEnd + 0.25, ctx0: playStart, sec0: startSec, frames: [], recent: [] },
     evalAt: playEnd + 0.3 + latency() + 0.1,
   };
+  prepJudges(S.run, seg);
   setGo(true);
 }
 
@@ -1156,7 +1220,7 @@ function frame(now) {
         updatePhase('listen', `${where}：お手本を聞いてください。`);
       } else if (a < ph.singStart) {
         S.view = seg.startSec - (ph.singStart - a) * run.r;
-        if (a >= ph.countStart) { count = String(Math.min(ph.beats, Math.floor((a - ph.countStart) / ph.beatSec) + 1)); countSub = settings.cues ? entryHint(S.expr, seg.startQ) : ''; }
+        if (a >= ph.countStart) { count = String(Math.min(ph.beats, Math.floor((a - ph.countStart) / ph.beatSec) + 1)); countSub = cuesOn() ? entryHint(S.expr, seg.startQ) : ''; }
         updatePhase('count', `${where}：カウントのあと歌います。`);
       } else {
         S.view = seg.startSec + (a - ph.singStart) * run.r;
@@ -1164,7 +1228,9 @@ function frame(now) {
         if (S.quiet) updatePhase('sing', '声が小さすぎて音程が拾えません。もう少しiPadに近づいてみましょう。', true);
         else updatePhase('sing', run.kind === 'alt' ? `${where}：歌ってください（鳴るのはクリックだけ）` : `${where}：伴奏に合わせて歌ってください。`);
       }
+      if (run.cap) checkJudges(run, false);
       if (S.run && ctxNow >= run.evalAt) {
+        if (run.cap) checkJudges(run, true);
         if (run.kind === 'alt') finishSegment();
         else {
           keepClip(run, 0);
@@ -1217,11 +1283,25 @@ function draw(o = {}) {
   const idle = !run;
   const q = cursorQ();
   const m = S.measures[measureIndexAt(S.measures, q)];
-  const cue = settings.cues && S.expr ? cueAt(S.expr, q, m ? 4 / m.beatType : 1) : null;
+  const cue = cuesOn() && S.expr ? cueAt(S.expr, q, m ? 4 / m.beatType : 1) : null;
+  const running = !!run && run.phase !== 'result';
+  const now = performance.now();
+  const karaoke = settings.fx === 'karaoke' && running && !!cue;
+  if (karaoke) {
+    // 巻き戻った（お手本 → カウント → 歌う で同じ所をもう一度通る）ら、きっかけをもう一度出せるように
+    if (q < fxSeen.lastQ - 0.05) { fxSeen.breath = null; fxSeen.flash = null; }
+    fxSeen.lastQ = q;
+    const b = cue.breath;
+    if (b && b.state === 'now' && fxSeen.breath !== b.q) { fxSeen.breath = b.q; fx.breath(now, fxBox()); }
+    const f = cue.dyn.flash;
+    if (f && f.age < 0.5 && fxSeen.flash !== f.q) { fxSeen.flash = f.q; fx.slam(now, f.value, levelOf(f.value), fxBox()); }
+  }
   roll.draw({
     view: S.view,
     cue,
-    running: !!run && run.phase !== 'result',
+    fx: settings.fx,
+    shake: karaoke ? fx.shake(now) : null,
+    running,
     editing: S.editing,
     pendingWedge: S.pendingWedge,
     countSub: o.countSub,
@@ -1238,8 +1318,14 @@ function draw(o = {}) {
     handles: idle,
     cursorLabel: idle && !S.drag ? posLabel(S.measures, snapQ(S.snaps, cursorQ())) : idle ? posLabel(S.measures, cursorQ()) : null,
   });
+  if (settings.fx === 'karaoke' && (running || fx.items.length || fx.parts.length)) {
+    const b = cue && cue.breath;
+    fx.draw(roll.g, fxBox(), now, { running: karaoke, breathSoon: b && b.state === 'soon' ? b : null, wedge: cue && cue.dyn.wedge });
+    if (!running && (fx.items.length || fx.parts.length)) S.dirty = true; // 止めたあとも、残りの演出を消えるまで描く
+  }
   mini.draw({ range: rangeSec(), view: roll.visibleSpan(S.view), cursorSec: S.view, playing: !idle });
 }
+function fxBox() { return { W: roll.w, H: roll.h, top: roll.noteTop, bot: roll.h - roll.lyricH, px: roll.playX, keyW: roll.keyW }; }
 
 // ---------------- 聞き直し ----------------
 const fmtDate = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
@@ -1400,6 +1486,8 @@ function showReport(sum, fresh) {
   $('report-range').textContent = [sum.rangeText, sum.modeText, sum.tempo ? `テンポ${Math.round(sum.tempo * 100)}%` : ''].filter(Boolean).join('・');
   $('report-score').textContent = sum.score;
   $('report-grades').textContent = gradeText(sum.gradeCount);
+  $('report-expr').textContent = sum.exprText || '';
+  $('report-expr').hidden = !sum.exprText;
   const ul = $('report-comments');
   ul.textContent = '';
   for (const c of sum.comments) { const li = document.createElement('li'); li.textContent = c; ul.appendChild(li); }

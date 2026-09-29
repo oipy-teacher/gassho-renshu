@@ -137,9 +137,9 @@ export function cueAt(expr, q, beatQ = 1, lead = 2) {
   if (nx && nx.q - q <= nextLead) out.dyn.next = { value: nx.value, beatsLeft: Math.ceil((nx.q - q) / beatQ - 1e-3), progress: 1 - (nx.q - q) / nextLead };
   for (const d of expr.dyns) {
     const age = (q - d.q) / beatQ;
-    if (age >= -EPS && age < 1) out.dyn.flash = { value: d.value, age: Math.max(0, age) };
+    if (age >= -EPS && age < 1) out.dyn.flash = { value: d.value, age: Math.max(0, age), q: d.q };
   }
-  for (const w of expr.wedges) if (q >= w.startQ - EPS && q < w.endQ) out.dyn.wedge = { kind: w.kind, progress: (q - w.startQ) / Math.max(EPS, w.endQ - w.startQ) };
+  for (const w of expr.wedges) if (q >= w.startQ - EPS && q < w.endQ) out.dyn.wedge = { kind: w.kind, progress: (q - w.startQ) / Math.max(EPS, w.endQ - w.startQ), q: w.startQ };
   if (!out.dyn.wedge) {
     const w = expr.wedges.find((x) => x.startQ > q + EPS && x.startQ - q <= nextLead);
     if (w && !out.dyn.next) out.dyn.next = { value: w.kind === 'cresc' ? 'cresc.' : 'dim.', beatsLeft: Math.ceil((w.startQ - q) / beatQ - 1e-3), progress: 1 - (w.startQ - q) / nextLead };
@@ -173,6 +173,76 @@ export function snapToNoteHead(notes, q) {
   let best = null;
   for (const n of notes) if (!best || Math.abs(n.startQ - q) < Math.abs(best - q)) best = n.startQ;
   return best ?? q;
+}
+
+// ---------------- 合図どおりに歌えたか（マイクの声から判定。ごほうびの演出に使う） ----------------
+// frames: [{sec(楽譜の秒), f0, db}]（10ms ごと）。r = テンポの倍率（楽譜の秒 ÷ r = 実際の秒）
+const voiced = (f, quietDb) => f.f0 > 0 && f.db > quietDb;
+const meanDb = (fs) => fs.reduce((a, f) => a + f.db, 0) / fs.length;
+const within = (frames, a, b) => frames.filter((f) => f.sec >= a && f.sec < b);
+
+/** 息継ぎ: 吸う時間に、声の切れ目（実時間で 0.1 秒ほど）があったか。直前に歌っていなければ判定しない（null） */
+export function judgeBreath(frames, zoneSec, sec, r = 1, quietDb = -58) {
+  const before = within(frames, zoneSec - 0.6 * r, zoneSec);
+  if (before.filter((f) => voiced(f, quietDb)).length < 10) return null;
+  const zone = within(frames, zoneSec - 0.04 * r, sec + 0.06 * r);
+  if (zone.length < 3) return null;
+  let run = 0, best = 0, prev = null;
+  for (const f of zone) {
+    if (!voiced(f, quietDb)) { run += prev ? f.sec - prev.sec : 0.01 * r; best = Math.max(best, run); } else run = 0;
+    prev = f;
+  }
+  const need = Math.max(0.06, Math.min(0.12, 0.5 * (sec - zoneSec) / r));
+  return { ok: best / r >= need - 1e-6, silentSec: +(best / r).toFixed(3) };
+}
+
+/** だんだん強く／弱く: 松葉の最初の3割と最後の3割で、声の大きさ（dB）が 2dB 以上変わったか */
+export function judgeWedge(frames, startSec, endSec, kind, quietDb = -58) {
+  const len = endSec - startSec;
+  const a = within(frames, startSec, startSec + len * 0.3).filter((f) => voiced(f, quietDb));
+  const b = within(frames, endSec - len * 0.3, endSec).filter((f) => voiced(f, quietDb));
+  if (a.length < 8 || b.length < 8) return null;
+  const diff = meanDb(b) - meanDb(a);
+  return { ok: kind === 'cresc' ? diff >= 2 : diff <= -2, diffDb: +diff.toFixed(1) };
+}
+
+/** 強弱の切り替え（p → f など）: 前後 1.5 拍ずつの声の大きさが、向きどおりに 2.5dB 以上変わったか */
+export function judgeDyn(frames, sec, beatSec, fromLevel, toLevel, quietDb = -58) {
+  if (fromLevel == null || toLevel == null || fromLevel === toLevel) return null;
+  const a = within(frames, sec - 1.5 * beatSec, sec).filter((f) => voiced(f, quietDb));
+  const b = within(frames, sec + 0.1 * beatSec, sec + 1.6 * beatSec).filter((f) => voiced(f, quietDb));
+  if (a.length < 8 || b.length < 8) return null;
+  const diff = meanDb(b) - meanDb(a);
+  return { ok: toLevel > fromLevel ? diff >= 2.5 : diff <= -2.5, diffDb: +diff.toFixed(1) };
+}
+
+/**
+ * ある区間で判定する記号の一覧（歌う区間 [fromSec, toSec] の中にあるもの）
+ * @param rollExpr 秒に直した記号（Roll.expr）
+ * @returns [{kind:'breath'|'wedge'|'dyn', key, evalSec, ...}]  evalSec = この時刻までの声が集まったら判定できる
+ */
+export function judgeTargets(rollExpr, fromSec, toSec, beatSecAt) {
+  if (!rollExpr) return [];
+  const out = [];
+  for (const b of rollExpr.breaths) {
+    if (b.zoneSec > fromSec + 0.3 && b.sec <= toSec + 1e-6) out.push({ kind: 'breath', key: 'b' + b.q, zoneSec: b.zoneSec, sec: b.sec, evalSec: b.sec + 0.08 });
+  }
+  for (const w of rollExpr.wedges) {
+    if (w.startSec >= fromSec - 1e-6 && w.endSec <= toSec + 1e-6) out.push({ kind: 'wedge', key: 'w' + w.startQ, wedge: w.kind, startSec: w.startSec, endSec: w.endSec, evalSec: w.endSec + 0.05 });
+  }
+  let prevLevel = null;
+  for (const d of rollExpr.dyns) {
+    const lv = levelOf(d.value);
+    if (lv == null) continue;
+    const bs = beatSecAt(d.sec);
+    // 松葉がそのまま流れこむ強弱（cresc. → f）は、急に変わる所ではないので判定しない（松葉の方で判定する）
+    const led = rollExpr.wedges.some((w) => Math.abs(w.endSec - d.sec) < bs + 1e-6);
+    if (prevLevel != null && lv !== prevLevel && !led && d.sec - 1.5 * bs >= fromSec && d.sec + 1.6 * bs <= toSec + 1e-6) {
+      out.push({ kind: 'dyn', key: 'd' + d.q, value: d.value, from: prevLevel, to: lv, sec: d.sec, beatSec: bs, evalSec: d.sec + 1.6 * bs });
+    }
+    prevLevel = lv;
+  }
+  return out.sort((a, b) => a.evalSec - b.evalSec);
 }
 
 // ---------------- 楽譜ファイルへの書き戻し ----------------

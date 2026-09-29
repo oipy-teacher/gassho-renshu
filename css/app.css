@@ -225,6 +225,8 @@ b { font-weight: 700; }
 .seg-card-score b { font-size: 54px; line-height: 1; }
 .seg-card-score span { font-size: 18px; margin-left: 4px; }
 .seg-card-grades { margin: 0; font-size: 15px; color: var(--sub); }
+.seg-card-expr, .report-expr { margin: 4px 0 0; font-weight: 700; color: #9a5a00; font-size: 15px; }
+.report-expr { margin: 0 0 10px; }
 .seg-card-comment { margin: 8px 0 12px; font-size: 16px; }
 .seg-card-actions { display: flex; gap: 10px; }
 .seg-card-actions .btn { flex: 1; }

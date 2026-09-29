@@ -139,6 +139,7 @@
         <p class="seg-card-label" id="seg-label"></p>
         <p class="seg-card-score"><b id="seg-score"></b><span>点</span></p>
         <p class="seg-card-grades" id="seg-grades"></p>
+        <p class="seg-card-expr" id="seg-expr" hidden></p>
         <p class="seg-card-comment" id="seg-comment"></p>
         <div class="seg-card-actions">
           <button class="btn btn-quiet" type="button" id="btn-seg-again">もう一度</button>
@@ -228,6 +229,7 @@
     <p class="report-range" id="report-range"></p>
     <p class="report-score"><b id="report-score"></b><span>点</span></p>
     <p class="report-grades" id="report-grades"></p>
+    <p class="report-expr" id="report-expr" hidden></p>
     <ul class="report-comments" id="report-comments"></ul>
     <h3>小節ごと</h3>
     <div class="measure-strip" id="measure-strip"></div>
@@ -266,7 +268,15 @@
     <div class="set-row"><label for="vol-piano">ピアノ伴奏の音量</label><input id="vol-piano" type="range" min="0" max="100" step="5"></div>
     <div class="set-row"><label for="vol-click">クリックの音量</label><input id="vol-click" type="range" min="0" max="100" step="5"></div>
     <div class="set-row"><label><input type="checkbox" id="opt-record"> 録音を残す（聞き直し用。このiPadの中だけに保存します）</label></div>
-    <div class="set-row"><label><input type="checkbox" id="opt-cues"> 練習中に、息継ぎと強弱の合図を出す（「V すう」・「あと◯拍で f」）</label></div>
+    <div class="set-row">
+      <span>息継ぎ・強弱の合図と演出</span>
+      <div class="seg seg-small" role="radiogroup" id="fx-seg" aria-label="合図と演出">
+        <button type="button" role="radio" data-fx="karaoke">カラオケ風</button>
+        <button type="button" role="radio" data-fx="calm">しずか</button>
+        <button type="button" role="radio" data-fx="off">出さない</button>
+      </div>
+      <p class="note">カラオケ風: 「息継ぎ！」「だんだん強く！！」が大きく出て、声で判定して「決まった！」とコンボが出ます。しずか: 帯と小さな札だけ。</p>
+    </div>
     <div class="set-row"><label><input type="checkbox" id="opt-listen"> 交互練習で、歌う前にお手本を聞く</label></div>
     <div class="set-row"><label><input type="checkbox" id="opt-preroll"> 通しで、始める位置の1小節前から伴奏を流す（入りやすくなります）</label></div>
     <div class="set-row"><label><input type="checkbox" id="opt-guide"> 通しで、自分のパートの音も鳴らす（マイクが拾いやすくなります）</label></div>

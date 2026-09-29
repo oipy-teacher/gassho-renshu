@@ -166,8 +166,10 @@ export class Roll {
   draw(s) {
     const g = this.g, W = this.w, H = this.h, view = s.view;
     const top = this.headH, bot = H - this.lyricH, row = this.rowH;
+    g.save();
+    if (s.shake) g.translate(s.shake.x, s.shake.y); // 強くなった瞬間のゆれ
     g.fillStyle = C.board;
-    g.fillRect(0, 0, W, H);
+    g.fillRect(-20, -20, W + 40, H + 40);
 
     // 黒鍵の段を少し暗く（鍵盤の並びが目で追える）
     for (let m = this.low; m <= this.high; m++) {
@@ -295,13 +297,32 @@ export class Roll {
     g.textAlign = 'left';
     let lastX = -1e9;
     const cur = this.noteAt(view);
+    const ly = bot + this.lyricH / 2 + 1;
     for (const n of this.notes) {
       if (!n.lyric) continue;
       const x = this.xOf(n.startSec, view);
       if (x < this.keyW - 30 || x > W) continue;
       if (x - lastX < 20) continue;
-      g.fillStyle = cur && cur.id === n.id ? C.voice : C.chalk;
-      g.fillText(n.lyric.replace(/-$/, ''), Math.max(this.keyW + 2, x + 2), bot + this.lyricH / 2 + 1);
+      const text = n.lyric.replace(/-$/, ''), tx = Math.max(this.keyW + 2, x + 2);
+      if (s.running && s.fx === 'karaoke') {
+        // カラオケの字幕: 歌い終わった字は色が変わり、いまの字は左から色がぬられていく
+        const isCur = cur && cur.id === n.id;
+        g.font = `${isCur ? 800 : 600} ${isCur ? 22 : 19}px ${FONT}`;
+        const tw = g.measureText(text).width;
+        const k = isCur ? Math.max(0, Math.min(1, (view - n.startSec) / Math.max(0.05, n.endSec - n.startSec))) : n.endSec <= view ? 1 : 0;
+        g.lineJoin = 'round'; g.strokeStyle = 'rgba(12,24,20,0.9)'; g.lineWidth = 4;
+        g.strokeText(text, tx, ly);
+        g.fillStyle = C.chalk; g.fillText(text, tx, ly);
+        if (k > 0) {
+          g.save(); g.beginPath(); g.rect(tx - 2, bot, tw * k + 2, this.lyricH); g.clip();
+          g.fillStyle = isCur ? '#ff9b5a' : 'rgba(255,208,77,0.9)'; g.fillText(text, tx, ly);
+          g.restore();
+        }
+        g.font = `600 19px ${FONT}`;
+      } else {
+        g.fillStyle = cur && cur.id === n.id ? C.voice : C.chalk;
+        g.fillText(text, tx, ly);
+      }
       lastX = x;
     }
 
@@ -328,6 +349,7 @@ export class Roll {
     }
 
     this.drawKeys(s.activeMidi);
+    g.restore();
     if (s.cue) this.drawCues(s);
 
     if (s.count) {
@@ -489,8 +511,8 @@ export class Roll {
         g.fillStyle = 'rgba(240,243,234,0.12)'; g.fillRect(x + 10, y + 58, w - 20, 4);
         g.fillStyle = C.chalk; g.fillRect(x + 10, y + 58, (w - 20) * d.wedge.progress, 4);
       }
-      // 変わった瞬間: 再生位置に大きく
-      if (flash > 0) {
+      // 変わった瞬間: 再生位置に大きく（カラオケ風のときは演出の側で出す）
+      if (flash > 0 && s.fx !== 'karaoke') {
         const fv = d.flash.value;
         g.font = `italic 700 ${Math.round(96 + 24 * (1 - flash))}px ${SERIF}`;
         g.textAlign = 'center';
@@ -502,7 +524,7 @@ export class Roll {
 
     // 息継ぎの合図（動いている間だけ）
     const b = cue.breath;
-    if (s.running && b) {
+    if (s.running && b && s.fx !== 'karaoke') {
       if (b.state === 'soon') {
         // 再生位置のそばに「あと◯拍でブレス」と、V の所に満ちていく輪
         const label = `V あと${b.beatsLeft}拍でブレス`;
