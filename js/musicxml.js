@@ -48,6 +48,8 @@ export function parseMusicXml(xmlText) {
   const measureMeta = [];   // measureIdx -> {number, beats, beatType, implicit}
   const tempoRaw = [];      // {mi, relQ, bpm}
   const marksRaw = [];      // 練習番号 {mi, label}
+  const exprRaw = [];       // 歌い方の記号 {type, pi, part, mi, relQ, ...}（息継ぎ・強弱・松葉・文字の指示・フェルマータ）
+  const anchors = [];       // 書き戻し用: 音符・休符の要素の頭 {pi, mi, relQ, at, div}
   const clefByPart = new Map();
   const transposeByPart = new Map();
 
@@ -89,7 +91,7 @@ export function parseMusicXml(xmlText) {
             const dur = toQ(num(el, 'duration', 0));
             const isChord = !!kid(el, 'chord');
             const start = isChord ? lastStart : cursor;
-            if (!isChord) { lastStart = cursor; cursor += dur; }
+            if (!isChord) { anchors.push({ pi, mi, relQ: cursor, at: el.start, div: divisions }); lastStart = cursor; cursor += dur; }
             maxCursor = Math.max(maxCursor, cursor);
             const voice = txt(el, 'voice') || '1';
             const staff = txt(el, 'staff') || '1';
@@ -112,7 +114,15 @@ export function parseMusicXml(xmlText) {
               if (syl === 'begin' || syl === 'middle') lyric += '-';
             }
             const noteDyn = el.attrs.dynamics ? dynOfNumber(parseFloat(el.attrs.dynamics)) : dyn;
-            rawNotes.push({ part: pid, pi, voice, staff, mi, relQ: start, durQ: dur, midi, tieStart, tieStop, lyric, chord: isChord, dyn: noteDyn });
+            // 息継ぎ（V・カンマ）・区切り（//）・フェルマータ。息継ぎは「この音の終わり」で吸う
+            let breath = false, fermata = false;
+            for (const nt of kids(el, 'notations')) {
+              for (const ar of kids(nt, 'articulations')) if (kid(ar, 'breath-mark') || kid(ar, 'caesura')) breath = true;
+              if (kid(nt, 'fermata')) fermata = true;
+            }
+            if (breath) exprRaw.push({ type: 'breath', pi, part: pid, voice, mi, relQ: start + dur });
+            if (fermata && !isChord) exprRaw.push({ type: 'fermata', pi, part: pid, voice, mi, relQ: start });
+            rawNotes.push({ part: pid, pi, voice, staff, mi, relQ: start, durQ: dur, midi, tieStart, tieStop, lyric, chord: isChord, dyn: noteDyn, src: noteSrc(el) });
             break;
           }
           case 'backup': cursor -= toQ(num(el, 'duration', 0)); if (cursor < 0) cursor = 0; break;
@@ -120,7 +130,17 @@ export function parseMusicXml(xmlText) {
           case 'direction': {
             const offset = toQ(num(el, 'offset', 0));
             for (const dt of kids(el, 'direction-type')) {
-              for (const dy of kids(dt, 'dynamics')) { const d = dynOf(dy.children.map((c) => c.name)); if (d) dyn = d; }
+              for (const dy of kids(dt, 'dynamics')) {
+                const names = dy.children.map((c) => c.name);
+                const d = dynOf(names); if (d) dyn = d;
+                const value = names.find((n) => n !== 'other-dynamics') || txt(dy, 'other-dynamics');
+                if (value) exprRaw.push({ type: 'dyn', pi, part: pid, mi, relQ: cursor + offset, value });
+              }
+              for (const wg of kids(dt, 'wedge')) exprRaw.push({ type: 'wedge', pi, part: pid, mi, relQ: cursor + offset, wtype: wg.attrs.type, number: wg.attrs.number || '1' });
+              for (const wd of kids(dt, 'words')) {
+                const text = wd.text.replace(/\s+/g, ' ').trim();
+                if (text && text.length <= 24) exprRaw.push({ type: 'words', pi, part: pid, mi, relQ: cursor + offset, text });
+              }
               for (const rh of kids(dt, 'rehearsal')) {
                 const label = rh.text.trim();
                 if (label && !marksRaw.some((m) => m.mi === mi && m.label === label)) marksRaw.push({ mi, label });
@@ -160,6 +180,7 @@ export function parseMusicXml(xmlText) {
         }
       }
       lens[mi] = maxCursor;
+      anchors.push({ pi, mi, relQ: maxCursor, at: mEl.innerEnd, div: divisions, end: true });
       if (pi === 0 || !measureMeta[mi]) {
         measureMeta[mi] = { number: mEl.attrs.number || String(mi + 1), beats, beatType, implicit: mEl.attrs.implicit === 'yes' };
       }
@@ -207,12 +228,13 @@ export function parseMusicXml(xmlText) {
     const o = open.get(key);
     if (n.tieStop && o && Math.abs(o.startQ + o.durQ - n.startQ) < 1e-4) {
       o.durQ += n.durQ;
+      o.srcEnd = n.src; // 息継ぎを書き戻すときは、タイの最後の音符に付ける
       if (!n.tieStart) open.delete(key);
       continue;
     }
     const note = {
       id: notes.length, part: n.part, voice: n.voice, staff: n.staff, midi: n.midi,
-      startQ: n.startQ, durQ: n.durQ, measureIndex: n.mi, lyric: n.lyric, dyn: n.dyn,
+      startQ: n.startQ, durQ: n.durQ, measureIndex: n.mi, lyric: n.lyric, dyn: n.dyn, src: n.src, srcEnd: n.src,
     };
     notes.push(note);
     if (n.tieStart) open.set(key, note); else open.delete(key);
@@ -229,7 +251,46 @@ export function parseMusicXml(xmlText) {
   for (const w of warnings) if (w !== 'REPEAT') warnList.push(w);
 
   const marks = marksRaw.sort((a, b) => a.mi - b.mi).map((m) => ({ label: m.label, measure: measures[m.mi].number }));
-  return { title, measures, totalQ, tempoMap, notes, tracks, marks, warnings: warnList, timeline, totalSec: timeline.qToSec(totalQ) };
+  const expr = buildExpr(exprRaw, measures);
+  const src = {
+    anchors: anchors.map((a) => ({ part: partEls[a.pi].attrs.id, q: measures[a.mi].startQ + a.relQ, mi: a.mi, at: a.at, div: a.div, end: !!a.end })),
+  };
+  return { title, measures, totalQ, tempoMap, notes, tracks, marks, expr, src, warnings: warnList, timeline, totalSec: timeline.qToSec(totalQ) };
+}
+
+/** 書き戻し用: 音符の要素のどこに <notations> を足せるか */
+function noteSrc(el) {
+  const nt = kid(el, 'notations');
+  const after = el.children.find((c) => c.name === 'lyric' || c.name === 'play' || c.name === 'listen');
+  return { notationsAt: nt && !nt.selfClose ? nt.innerStart : null, insertAt: after ? after.start : el.innerEnd };
+}
+
+/** 楽譜の記号 → 絶対位置（q）。松葉（<  >）は始まりと終わりを組にする */
+function buildExpr(raw, measures) {
+  const out = { breaths: [], dyns: [], wedges: [], words: [], fermatas: [] };
+  const open = new Map();
+  const at = (r) => measures[r.mi].startQ + r.relQ;
+  const sorted = [...raw].sort((a, b) => (a.pi - b.pi) || (at(a) - at(b)));
+  for (const r of sorted) {
+    const q = at(r);
+    if (r.type === 'breath') out.breaths.push({ part: r.part, voice: r.voice, q });
+    else if (r.type === 'fermata') out.fermatas.push({ part: r.part, voice: r.voice, q });
+    else if (r.type === 'dyn') out.dyns.push({ part: r.part, q, value: r.value });
+    else if (r.type === 'words') out.words.push({ part: r.part, q, text: r.text });
+    else if (r.type === 'wedge') {
+      const key = r.part + '|' + r.number;
+      if (r.wtype === 'crescendo' || r.wtype === 'diminuendo') open.set(key, { part: r.part, startQ: q, kind: r.wtype === 'crescendo' ? 'cresc' : 'dim' });
+      else if (r.wtype === 'stop' && open.has(key)) {
+        const w = open.get(key);
+        open.delete(key);
+        if (q > w.startQ + 1e-6) out.wedges.push({ ...w, endQ: q });
+      }
+    }
+  }
+  const dedupe = (list, key) => { const seen = new Set(); return list.filter((x) => { const k = key(x); if (seen.has(k)) return false; seen.add(k); return true; }); };
+  out.breaths = dedupe(out.breaths, (b) => `${b.part}|${b.voice}|${b.q.toFixed(4)}`);
+  out.dyns = dedupe(out.dyns, (d) => `${d.part}|${d.q.toFixed(4)}|${d.value}`);
+  return out;
 }
 
 /** <dynamics><pp/></dynamics> → 'p' / 'mf' / 'f'（ピアノの録音の3段） */

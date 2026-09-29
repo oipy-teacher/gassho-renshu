@@ -161,6 +161,25 @@ b { font-weight: 700; }
 .meter-bar i { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--green); transition: width .08s linear; }
 .meter-th { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--stop); left: 40%; } /* −50dB（これより小さいと「声が小さすぎ」） */
 
+/* ---------- 練習: 息継ぎ・強弱の書きこみ ---------- */
+.bar-actions { display: flex; gap: 4px; align-items: center; }
+#btn-expr[aria-pressed="true"] { background: var(--chalk-yellow); color: var(--board); }
+.expr-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 6px 14px; background: #fff8e1; border-bottom: 1.5px solid #ecd9a0; }
+.expr-tools { display: flex; border: 1.5px solid var(--line); border-radius: var(--r); overflow: hidden; background: #fff; }
+.expr-tools button { font: inherit; font-weight: 700; border: 0; background: transparent; color: var(--ink); min-height: 46px; min-width: 44px; padding: 2px 8px; cursor: pointer; touch-action: manipulation; line-height: 1.1; }
+.expr-tools button + button { border-left: 1.5px solid var(--line); }
+.expr-tools button small { display: block; font-size: 10.5px; font-weight: 600; font-style: normal; font-family: var(--font); }
+.expr-tools .tool-dyn { font-family: "Times New Roman", serif; font-style: italic; font-size: 21px; }
+.expr-tools .tool-breath { color: #2f78a8; font-size: 20px; }
+.expr-tools .tool-wedge { font-size: 20px; }
+.expr-tools button[aria-checked="true"] { background: var(--board); color: var(--chalk-yellow); }
+.expr-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.expr-help { margin: 0; flex-basis: 100%; font-size: 13px; color: var(--sub); line-height: 1.4; }
+/* 書きこみ中は凡例をしまって、黒板を広く使う */
+#screen-practice.editing .tray { display: none; }
+#screen-practice.editing .board { border-bottom: 7px solid var(--wood); border-radius: 6px; }
+.tray-v { font-weight: 800; color: var(--chalk-sky); font-size: 15px; width: 30px; text-align: center; }
+
 /* ---------- 練習: 黒板 ---------- */
 .board-wrap { padding: 10px 14px 0; min-height: 0; flex: 1 1 auto; display: flex; flex-direction: column; }
 .board {

@@ -9,6 +9,7 @@ import { Minimap, hitEdge } from './minimap.js';
 import { store, hashText, listTakes, putTake, removeTake, clearTakes } from './store.js';
 import { ClipRecorder, makeTake, reviewFrames, reviewClips, adpcmDecode } from './recorder.js';
 import { sections, sectionOf } from './marks.js';
+import { mergeExpr, cueAt, entryHint, autoBreaths, snapToNoteHead, writeMarksToXml, DYN_PALETTE } from './expr.js';
 import {
   beatGrid, buildSnaps, snapQ, measureIndexAt, stepBeat, stepMeasure, posLabel, endLabel,
   setRangeEdge, dragRangeEdge, segmentsFrom, countInBeats, Inertia, releaseVelocity, joinLyrics, searchLyrics,
@@ -22,7 +23,7 @@ let roll = null, mini = null;
 const DEFAULTS = {
   mode: 'alt', segLen: 2, tempo: 80, volMine: 100, volOthers: 35, volPiano: 35, volClick: 70,
   latencyMs: 0, listen: true, guide: false, clickThrough: false, preroll: true,
-  record: true, reviewPiano: true, reviewBalance: 40,
+  record: true, reviewPiano: true, reviewBalance: 40, cues: true,
 };
 const settings = { ...DEFAULTS, ...readJSON('gassho-settings') };
 function readJSON(k) { try { return JSON.parse(localStorage.getItem(k) || '{}') || {}; } catch (_) { return {}; } }
@@ -45,6 +46,8 @@ const S = {
   lastReport: null,
   inertia: null, anim: null, drag: null, dirty: true,
   takes: [], review: null, live: null, lastTakeId: null,
+  expr: null,                      // 歌い方の記号（ファイル＋書きこみ）。mergeExpr の結果
+  editing: false, tool: 'breath', pendingWedge: null, undo: [],
 };
 
 const qToSec = (q) => S.score.timeline.qToSec(q);
@@ -212,6 +215,8 @@ async function chooseTrack(t) {
   S.voice = [];
   S.lastReport = null;
   S.review = null; S.live = null;
+  S.editing = false; S.pendingWedge = null; S.undo = [];
+  syncExprBar();
   if (settings.mode === 'review') settings.mode = 'alt';
   $('btn-report').hidden = true;
   await refreshTakes();
@@ -254,8 +259,129 @@ function computeNotes() {
   S.snaps = buildSnaps(S.measures, S.notes);
   roll.setData(S.notes, S.measures, S.sections);
   mini.setData(S.measures, S.notes, S.sections);
+  refreshExpr();
   renderMarks();
   S.dirty = true;
+}
+
+// ---------------- 歌い方の記号（息継ぎ・強弱） ----------------
+const userMarks = () => (S.rec && S.rec.expr && S.rec.expr.marks) || [];
+function refreshExpr() {
+  if (!S.score || !S.track) return;
+  S.expr = mergeExpr(S.score.expr, userMarks(), S.track, S.notes);
+  roll.setExpr(S.expr, qToSec);
+  S.dirty = true;
+}
+function setUserMarks(marks) {
+  S.undo.push(JSON.stringify(userMarks()));
+  if (S.undo.length > 40) S.undo.shift();
+  S.rec.expr = { marks };
+  clearTimeout(setUserMarks.t);
+  setUserMarks.t = setTimeout(() => store.put(S.rec).catch(() => toast('この端末に保存できませんでした。')), 400);
+  refreshExpr();
+  syncExprBar();
+}
+const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const near = (a, b) => Math.abs(a - b) < 1e-3;
+
+const EXPR_HELP = {
+  breath: '息を吸う所をタップ。「吸ったあとに歌い出す音」に V が付きます（もう一度タップで消えます）。このパートだけに入ります。',
+  dyn: '強さが変わる所をタップ。全パート共通で入ります（同じ記号をもう一度タップで消えます）。',
+  wedge: 'はじまりをタップ → おわりをタップ。全パート共通で入ります。',
+  erase: '消したい記号（V・強弱・松葉）をタップ。楽譜ファイルにもとから書いてある記号は消せません。',
+};
+function syncExprBar() {
+  $('btn-expr').setAttribute('aria-pressed', String(S.editing));
+  $('expr-bar').hidden = !S.editing;
+  $('screen-practice').classList.toggle('editing', S.editing);
+  for (const b of $('expr-tools').children) b.setAttribute('aria-checked', String(b.dataset.tool === S.tool));
+  const kind = S.tool === 'breath' ? 'breath' : S.tool === 'erase' ? 'erase' : S.tool === 'cresc' || S.tool === 'dim' ? 'wedge' : 'dyn';
+  $('expr-help').textContent = S.pendingWedge ? 'つぎに、おわりの位置をタップしてください。' : EXPR_HELP[kind];
+  $('btn-expr-undo').disabled = !S.undo.length;
+  $('btn-expr-export').disabled = !userMarks().length;
+  requestAnimationFrame(() => { roll.resize(); mini.resize(); S.dirty = true; });
+}
+$('btn-expr').addEventListener('click', () => {
+  if (S.run || !S.track) return;
+  S.editing = !S.editing;
+  S.pendingWedge = null;
+  syncExprBar();
+});
+$('btn-expr-done').addEventListener('click', () => { S.editing = false; S.pendingWedge = null; syncExprBar(); });
+$('expr-tools').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  S.tool = b.dataset.tool; S.pendingWedge = null; syncExprBar();
+});
+$('btn-expr-undo').addEventListener('click', () => {
+  if (!S.undo.length) return;
+  S.rec.expr = { marks: JSON.parse(S.undo.pop()) };
+  store.put(S.rec).catch(() => {});
+  S.pendingWedge = null;
+  refreshExpr(); syncExprBar();
+});
+$('btn-expr-auto').addEventListener('click', () => {
+  const have = S.expr.breaths.map((b) => b.q);
+  const add = autoBreaths(S.notes).filter((q) => !have.some((h) => near(h, q)));
+  if (!add.length) { toast('休符の前に、新しく入れられる所はありませんでした。'); return; }
+  setUserMarks([...userMarks(), ...add.map((q) => ({ id: newId(), type: 'breath', q, track: S.track.key }))]);
+  toast(`休符の所に ${add.length} か所、息継ぎを入れました。いらない所は「消す」か、V をもう一度タップで消せます。`, 5500);
+});
+$('btn-expr-export').addEventListener('click', async () => {
+  const marks = userMarks();
+  if (!marks.length) return;
+  let r;
+  try { r = writeMarksToXml(S.rec.xml, S.score, marks); } catch (err) { toast('書き出せませんでした（' + err.message + '）', 6000); return; }
+  const name = (S.score.title || '楽譜').replace(/[\\/:*?"<>|]/g, '_') + '_息継ぎ強弱つき.musicxml';
+  const file = new File([r.xml], name, { type: 'application/vnd.recordare.musicxml+xml' });
+  const msg = `息継ぎ${r.added.breath}・強弱${r.added.dyn}・松葉${r.added.wedge}を書きこんだ楽譜ファイルを作りました。` +
+    'このファイルを配れば、ほかのiPadでも同じ合図が出ます。' + (r.skipped ? `（${r.skipped}個は置き場所が見つからず入れられませんでした）` : '');
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); toast(msg, 7000); return; }
+  } catch (err) { if (err && err.name === 'AbortError') return; }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(file);
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  toast(msg, 7000);
+});
+
+/** 書きこみモードで黒板をタップした */
+function editTap(p) {
+  const q = secToQ(roll.secOfX(p.x, S.view));
+  const marks = userMarks();
+  const tool = S.tool;
+  if (tool === 'erase') {
+    const hit = roll.userMarkHit(p.x, S.view);
+    if (!hit) { toast('消したい記号（V・強弱・松葉）の上をタップしてください。'); return; }
+    if (hit.source !== 'user') { toast('楽譜ファイルにもとから書いてある記号は消せません。'); return; }
+    setUserMarks(marks.filter((m) => m.id !== hit.id));
+    return;
+  }
+  if (tool === 'breath') {
+    const qq = snapToNoteHead(S.notes, q);
+    const mine = marks.find((m) => m.type === 'breath' && m.track === S.track.key && near(m.q, qq));
+    if (mine) { setUserMarks(marks.filter((m) => m !== mine)); return; }
+    if (S.expr.breaths.some((b) => b.source === 'file' && near(b.q, qq))) { toast('ここには楽譜ファイルに息継ぎが書いてあります。'); return; }
+    setUserMarks([...marks, { id: newId(), type: 'breath', q: qq, track: S.track.key }]);
+    return;
+  }
+  const qq = snapQ(S.snaps, q);
+  if (tool === 'cresc' || tool === 'dim') {
+    if (!S.pendingWedge) { S.pendingWedge = { q: qq, sec: qToSec(qq) }; syncExprBar(); S.dirty = true; return; }
+    let a = S.pendingWedge.q, b = qq;
+    S.pendingWedge = null;
+    if (near(a, b)) { syncExprBar(); toast('はじまりと、おわりを別の所でタップしてください。'); return; }
+    if (b < a) [a, b] = [b, a];
+    setUserMarks([...marks, { id: newId(), type: 'wedge', q: a, endQ: b, value: tool }]);
+    return;
+  }
+  if (DYN_PALETTE.includes(tool)) {
+    const same = marks.find((m) => m.type === 'dyn' && near(m.q, qq));
+    if (same && same.value === tool) { setUserMarks(marks.filter((m) => m !== same)); return; }
+    const rest = marks.filter((m) => m !== same);
+    setUserMarks([...rest, { id: newId(), type: 'dyn', q: qq, value: tool }]);
+  }
 }
 
 function savePos() {
@@ -282,7 +408,7 @@ function setupRollGestures(cv) {
     if (S.run) return;
     S.inertia = null; S.anim = null;
     const p = localXY(cv, e);
-    const edge = roll.hitHandle(p.x, p.y, rangeSec(), S.view);
+    const edge = S.editing ? null : roll.hitHandle(p.x, p.y, rangeSec(), S.view);
     S.drag = edge ? { kind: 'edge', which: edge } : { kind: 'pan', x0: p.x, y0: p.y, view0: S.view, t0: performance.now(), moved: false, samples: [{ x: p.x, t: performance.now() }] };
     cv.setPointerCapture(e.pointerId);
     e.preventDefault();
@@ -308,6 +434,7 @@ function setupRollGestures(cv) {
     if (!d || S.run) return;
     const p = localXY(cv, e);
     if (d.kind === 'edge') { savePos(); S.dirty = true; return; }
+    if (!d.moved && performance.now() - d.t0 < 500 && S.editing) { editTap(p); return; }
     if (!d.moved && performance.now() - d.t0 < 500) {
       // タップ: 音符ならその頭、そうでなければ近い拍の頭へ
       const n = roll.noteHit(p.x, p.y, S.view);
@@ -515,6 +642,8 @@ function syncControls() {
   $('vol-click').value = settings.volClick;
   $('latency').value = settings.latencyMs; $('latency-out').textContent = (settings.latencyMs > 0 ? '+' : '') + settings.latencyMs + 'ms';
   $('opt-listen').checked = settings.listen;
+  $('opt-cues').checked = settings.cues;
+  $('btn-expr').disabled = !!S.run;
   $('opt-guide').checked = settings.guide;
   $('opt-preroll').checked = settings.preroll;
   $('opt-click-through').checked = settings.clickThrough;
@@ -578,6 +707,7 @@ bindRange('latency', 'latencyMs');
 $('latency').addEventListener('input', () => applyReviewOffset());
 const bindCheck = (id, key) => $(id).addEventListener('change', (e) => { settings[key] = e.target.checked; saveSettings(); });
 bindCheck('opt-listen', 'listen');
+$('opt-cues').addEventListener('change', (e) => { settings.cues = e.target.checked; saveSettings(); S.dirty = true; });
 bindCheck('opt-guide', 'guide');
 bindCheck('opt-preroll', 'preroll');
 bindCheck('opt-click-through', 'clickThrough');
@@ -619,6 +749,7 @@ function endQFor(q0) {
 function lastBeatQ() { return S.grid.length ? S.grid[S.grid.length - 1].q : 0; }
 
 async function startRun(opts = {}) {
+  if (S.editing) { S.editing = false; S.pendingWedge = null; syncExprBar(); }
   await engine.init();
   applyGains();
   $('sheet-report').hidden = true;
@@ -997,7 +1128,7 @@ function frame(now) {
   lastT = now;
   if ($('screen-practice').hidden) return;
   const run = S.run;
-  let count = null, clip = false, activeOn = false;
+  let count = null, countSub = '', clip = false, activeOn = false;
   if (run) {
     const a = engine.audibleTime(), ctxNow = engine.now;
     if (run.kind === 'listen' || run.kind === 'review') {
@@ -1025,7 +1156,7 @@ function frame(now) {
         updatePhase('listen', `${where}：お手本を聞いてください。`);
       } else if (a < ph.singStart) {
         S.view = seg.startSec - (ph.singStart - a) * run.r;
-        if (a >= ph.countStart) count = String(Math.min(ph.beats, Math.floor((a - ph.countStart) / ph.beatSec) + 1));
+        if (a >= ph.countStart) { count = String(Math.min(ph.beats, Math.floor((a - ph.countStart) / ph.beatSec) + 1)); countSub = settings.cues ? entryHint(S.expr, seg.startQ) : ''; }
         updatePhase('count', `${where}：カウントのあと歌います。`);
       } else {
         S.view = seg.startSec + (a - ph.singStart) * run.r;
@@ -1048,7 +1179,7 @@ function frame(now) {
     // マイクの音量メーター（-70〜-20dB）
     if (engine.mic && Number.isFinite(S.level)) $('meter-fill').style.width = Math.max(0, Math.min(100, ((S.level + 70) / 50) * 100)) + '%';
     if (performance.now() - S.liveAt > 150) S.liveMidi = null;
-    draw({ count, clip, activeOn });
+    draw({ count, countSub, clip, activeOn });
     return;
   }
 
@@ -1084,8 +1215,16 @@ function draw(o = {}) {
   const seg = run && run.segs ? run.segs[run.segIdx] : null;
   const act = o.activeOn ? roll.noteAt(S.view) : null;
   const idle = !run;
+  const q = cursorQ();
+  const m = S.measures[measureIndexAt(S.measures, q)];
+  const cue = settings.cues && S.expr ? cueAt(S.expr, q, m ? 4 / m.beatType : 1) : null;
   roll.draw({
     view: S.view,
+    cue,
+    running: !!run && run.phase !== 'result',
+    editing: S.editing,
+    pendingWedge: S.pendingWedge,
+    countSub: o.countSub,
     range: rangeSec(),
     segment: seg && run.kind === 'alt' ? { startSec: seg.startSec, endSec: seg.noteEnd } : null,
     results: S.results,

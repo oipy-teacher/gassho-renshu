@@ -1,4 +1,7 @@
 // 黒板のピアノロール: お手本の音符（チョークの棒）と自分の声（黄色いチョークの線）を重ねて流す
+// 上の帯（小節番号の下）に歌い方の記号（強弱・松葉・息継ぎ V）。練習中は、息継ぎと強弱の変わり目を合図で知らせる
+
+import { levelOf, DYN_JA } from './expr.js';
 
 const C = {
   board: '#27463c',
@@ -16,7 +19,18 @@ const C = {
   keyWhite: '#e9ece6',
   keyBlack: '#2b2f2c',
   keyText: '#33403a',
+  breath: '#93c9ec',
 };
+/** 強さの段 → 色（弱い＝空色・中くらい＝チョーク・強い＝朱色） */
+function levelColor(lv, a = 1) {
+  const stops = [[0, [110, 184, 236]], [3.5, [236, 240, 226]], [6, [255, 132, 72]]];
+  const x = Math.max(0, Math.min(6, lv));
+  const [a0, a1] = x <= 3.5 ? [stops[0], stops[1]] : [stops[1], stops[2]];
+  const k = (x - a0[0]) / (a1[0] - a0[0]);
+  const c = a0[1].map((v, i) => Math.round(v + (a1[1][i] - v) * k));
+  return `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+}
+const SERIF = '"Times New Roman", "Hiragino Mincho ProN", serif';
 const GRADE_COLOR = { '◎': C.great, '○': C.good, '△': C.fair, '×': C.miss };
 const BLACK = new Set([1, 3, 6, 8, 10]);
 const SOLFA = { 0: 'ド', 2: 'レ', 4: 'ミ', 5: 'ファ', 7: 'ソ', 9: 'ラ', 11: 'シ' };
@@ -29,7 +43,9 @@ export class Roll {
     this.pxPerSec = 120;
     this.keyW = 58;
     this.headH = 30;
+    this.exprH = 34; // 歌い方の記号の帯
     this.lyricH = 38;
+    this.expr = null;
     this.notes = [];
     this.measures = [];
     this.low = 60; this.high = 72;
@@ -57,14 +73,59 @@ export class Roll {
     this.low = lo; this.high = hi;
   }
 
+  /** 歌い方の記号（mergeExpr の結果）を秒に直して持つ */
+  setExpr(expr, qToSec) {
+    if (!expr) { this.expr = null; return; }
+    const sec = qToSec;
+    this.expr = {
+      breaths: expr.breaths.map((b) => ({ ...b, sec: sec(b.q), zoneSec: sec(b.zoneQ) })),
+      dyns: expr.dyns.map((d) => ({ ...d, sec: sec(d.q) })),
+      wedges: expr.wedges.map((w) => ({ ...w, startSec: sec(w.startQ), endSec: sec(w.endQ) })),
+      words: expr.words.map((w) => ({ ...w, sec: sec(w.q) })),
+      fermatas: expr.fermatas.map((f) => ({ ...f, sec: sec(f.q) })),
+      steps: expr.levels.map((l) => ({ ...l, sec: sec(l.q) })),
+    };
+    this.expr.hasDyn = this.expr.dyns.length > 0 || this.expr.wedges.length > 0;
+  }
+
+  levelAtSec(sec) {
+    const st = this.expr && this.expr.steps;
+    if (!st || !st.length) return null;
+    if (sec < st[0].sec - 1e-6) return null;
+    for (let i = 0; i < st.length; i++) {
+      const a = st[i], b = st[i + 1];
+      if (!b || sec < b.sec) return a.ramp && b ? a.level + (b.level - a.level) * ((sec - a.sec) / Math.max(1e-6, b.sec - a.sec)) : a.level;
+    }
+    return st[st.length - 1].level;
+  }
+
+  /** 書きこんだ記号（消せるもの）のうち、指の近くのもの */
+  userMarkHit(x, view, type = null) {
+    const e = this.expr;
+    if (!e) return null;
+    const cands = [
+      ...e.breaths.map((b) => ({ id: b.id, type: 'breath', x: this.xOf(b.sec, view) - 7, source: b.source })),
+      ...e.dyns.map((d) => ({ id: d.id, type: 'dyn', x: this.xOf(d.sec, view) + 12, source: d.source })),
+      ...e.wedges.map((w) => ({ id: w.id, type: 'wedge', x: this.xOf(w.startSec, view), x1: this.xOf(w.endSec, view), source: w.source })),
+    ].filter((c) => !type || c.type === type);
+    let best = null, bd = 22;
+    for (const c of cands) {
+      const d = c.x1 != null ? (x >= c.x && x <= c.x1 ? 0 : Math.min(Math.abs(x - c.x), Math.abs(x - c.x1))) : Math.abs(x - c.x);
+      if (d <= bd) { bd = d; best = c; }
+    }
+    return best;
+  }
+
+  get noteTop() { return this.headH + this.exprH; }
+
   xOf(sec, view) { return this.playX + (sec - view) * this.pxPerSec; }
   secOfX(x, view) { return view + (x - this.playX) / this.pxPerSec; }
   yOf(midi) {
-    const top = this.headH, bot = this.h - this.lyricH;
+    const top = this.noteTop, bot = this.h - this.lyricH;
     const row = (bot - top) / (this.high - this.low + 1);
     return bot - (midi - this.low + 0.5) * row;
   }
-  get rowH() { return (this.h - this.lyricH - this.headH) / (this.high - this.low + 1); }
+  get rowH() { return (this.h - this.lyricH - this.noteTop) / (this.high - this.low + 1); }
 
   /** 画面に見えている秒の範囲 */
   visibleSpan(view) { return { fromSec: this.secOfX(this.keyW, view), toSec: this.secOfX(this.w, view) }; }
@@ -167,6 +228,8 @@ export class Roll {
       }
     }
 
+    this.drawExprLane(s);
+
     // お手本の音符
     const results = s.results;
     const r = Math.min(5, row * 0.3);
@@ -250,10 +313,11 @@ export class Roll {
       const tw = g.measureText(s.cursorLabel).width + 14;
       const lx = Math.min(W - tw - 4, this.playX + 6);
       g.fillStyle = '#ff8f7a';
-      g.fillRect(lx, top + 4, tw, 22);
+      const ly = this.noteTop + 4;
+      g.fillRect(lx, ly, tw, 22);
       g.fillStyle = '#1f332c';
       g.textAlign = 'left';
-      g.fillText(s.cursorLabel, lx + 7, top + 15.5);
+      g.fillText(s.cursorLabel, lx + 7, ly + 11.5);
     }
     if (s.liveMidi != null) {
       let m = s.liveMidi;
@@ -264,18 +328,212 @@ export class Roll {
     }
 
     this.drawKeys(s.activeMidi);
+    if (s.cue) this.drawCues(s);
 
     if (s.count) {
       g.fillStyle = 'rgba(240,243,234,0.92)';
-      g.font = `700 ${Math.min(140, H * 0.36)}px ${FONT}`;
+      const fs = Math.min(140, H * 0.36);
+      g.font = `700 ${fs}px ${FONT}`;
       g.textAlign = 'center';
       g.textBaseline = 'middle';
-      g.fillText(s.count, this.keyW + (W - this.keyW) / 2, top + (bot - top) / 2);
+      const cx = this.keyW + (W - this.keyW) / 2, cy = top + (bot - top) / 2;
+      g.fillText(s.count, cx, cy);
+      if (s.countSub) {
+        // 入りの強弱（「p で入る」）
+        const lv = levelOf(s.countSub);
+        g.font = `italic 700 38px ${SERIF}`;
+        const w1 = g.measureText(s.countSub).width;
+        g.font = `700 20px ${FONT}`;
+        const label = 'で入る' + (DYN_JA[s.countSub] ? `（${DYN_JA[s.countSub]}）` : '');
+        const w2 = g.measureText(label).width;
+        const x0 = cx - (w1 + 8 + w2) / 2, y = cy + fs * 0.5 + 26;
+        g.textAlign = 'left';
+        g.fillStyle = lv != null ? levelColor(lv) : C.chalk;
+        g.font = `italic 700 38px ${SERIF}`;
+        g.fillText(s.countSub, x0, y);
+        g.fillStyle = C.chalk;
+        g.font = `700 20px ${FONT}`;
+        g.fillText(label, x0 + w1 + 8, y + 2);
+      }
+    }
+  }
+
+  /** 記号の帯（強さの帯・強弱・松葉・文字・フェルマータ・V）と、息継ぎの縦線・吸う時間の帯 */
+  drawExprLane(s) {
+    const g = this.g, W = this.w, view = s.view, e = this.expr;
+    const y0 = this.headH, h = this.exprH, mid = y0 + h / 2, bot = this.h - this.lyricH;
+    g.fillStyle = s.editing ? 'rgba(255,208,77,0.13)' : 'rgba(10,20,17,0.30)';
+    g.fillRect(this.keyW, y0, W - this.keyW, h);
+    g.fillStyle = 'rgba(236,240,230,0.10)';
+    g.fillRect(this.keyW, y0 + h - 1, W - this.keyW, 1);
+    if (!e) return;
+    const vis = (x) => x > this.keyW - 60 && x < W + 60;
+
+    // 強さの帯（太いほど強い）
+    if (e.steps.length) {
+      for (let x = this.keyW; x < W; x += 3) {
+        const lv = this.levelAtSec(this.secOfX(x + 1.5, view));
+        if (lv == null) continue;
+        const hh = 1.5 + lv * 1.65;
+        g.fillStyle = levelColor(lv, 0.62);
+        g.fillRect(x, mid - hh, 3, hh * 2);
+      }
+    }
+    // 松葉（< >）
+    g.strokeStyle = C.chalk; g.lineWidth = 2; g.lineCap = 'round';
+    for (const w of e.wedges) {
+      const xa = this.xOf(w.startSec, view), xb = this.xOf(w.endSec, view);
+      if (xb < this.keyW || xa > W) continue;
+      const open = 9, [ha, hb] = w.kind === 'cresc' ? [0, open] : [open, 0];
+      g.beginPath();
+      g.moveTo(xa + 2, mid - ha); g.lineTo(xb - 2, mid - hb);
+      g.moveTo(xa + 2, mid + ha); g.lineTo(xb - 2, mid + hb);
+      g.stroke();
+    }
+    // 文字の指示（rit. など）
+    g.font = `italic 600 13px ${SERIF}`;
+    g.textBaseline = 'middle'; g.textAlign = 'left';
+    for (const w of e.words) {
+      const x = this.xOf(w.sec, view);
+      if (!vis(x)) continue;
+      g.fillStyle = 'rgba(240,243,234,0.8)';
+      g.fillText(w.text, x + 3, y0 + h - 8);
+    }
+    // フェルマータ
+    for (const f of e.fermatas) {
+      const x = this.xOf(f.sec, view);
+      if (!vis(x)) continue;
+      g.strokeStyle = C.chalk; g.lineWidth = 1.6;
+      g.beginPath(); g.arc(x + 9, mid + 5, 8, Math.PI, 0); g.stroke();
+      g.fillStyle = C.chalk; g.beginPath(); g.arc(x + 9, mid + 2, 1.8, 0, Math.PI * 2); g.fill();
+    }
+    // 強弱の記号（読みやすいよう黒板色の下地）
+    g.font = `italic 700 19px ${SERIF}`;
+    for (const d of e.dyns) {
+      const x = this.xOf(d.sec, view);
+      if (!vis(x)) continue;
+      const tw = g.measureText(d.value).width;
+      g.fillStyle = 'rgba(28,50,43,0.92)';
+      g.fillRect(x + 1, mid - 11, tw + 8, 22);
+      const lv = levelOf(d.value);
+      g.fillStyle = lv != null ? levelColor(lv) : C.chalk;
+      g.fillText(d.value, x + 5, mid + 1);
+    }
+    // 息継ぎ: 帯に V・音符の段に縦線と「吸う時間」の帯
+    for (const b of e.breaths) {
+      const x = this.xOf(b.sec, view), xz = this.xOf(b.zoneSec, view);
+      if (x < this.keyW - 4 || xz > W) continue;
+      // 近づくほど「吸う時間」の帯が濃くなる（練習中だけ）
+      const c = s.running && s.cue && s.cue.breath && Math.abs(s.cue.breath.q - b.q) < 1e-6 ? s.cue.breath : null;
+      g.fillStyle = `rgba(147,201,236,${c ? (c.state === 'now' ? 0.5 : 0.16 + 0.3 * c.progress) : 0.16})`;
+      g.fillRect(Math.max(this.keyW, xz), this.noteTop, Math.max(0, x - Math.max(this.keyW, xz)), bot - this.noteTop);
+      g.strokeStyle = 'rgba(147,201,236,0.75)'; g.lineWidth = 1.5;
+      g.setLineDash([4, 4]);
+      g.beginPath(); g.moveTo(x, this.noteTop); g.lineTo(x, bot); g.stroke();
+      g.setLineDash([]);
+      if (x > this.keyW + 6) {
+        g.strokeStyle = C.breath; g.lineWidth = 3; g.lineCap = 'round'; g.lineJoin = 'round';
+        g.beginPath(); g.moveTo(x - 13, y0 + 8); g.lineTo(x - 7, y0 + h - 8); g.lineTo(x - 1, y0 + 8); g.stroke();
+      }
+    }
+    if (s.pendingWedge) {
+      const x = this.xOf(s.pendingWedge.sec, view);
+      g.fillStyle = C.voice;
+      g.fillRect(x - 1, y0, 3, h);
+    }
+  }
+
+  /** 練習中の合図: 左上に「いまの強さ」・再生位置に息継ぎの合図・強弱が変わった瞬間の大きな文字 */
+  drawCues(s) {
+    const g = this.g, W = this.w, H = this.h, cue = s.cue, px = this.playX;
+    const top = this.noteTop, bot = H - this.lyricH;
+    const pill = (x, y, w, h, fill) => { g.fillStyle = fill; rounded(g, x, y, w, h, 6); g.fill(); };
+
+    // いまの強さ（強弱の記号がある楽譜だけ）
+    if (this.expr && this.expr.hasDyn) {
+      const d = cue.dyn, x = this.keyW + 8, y = top + 8, w = 176;
+      const lines = d.next || d.wedge ? 2 : 1;
+      const h = lines === 2 ? 74 : 48;
+      const flash = s.running && d.flash ? 1 - d.flash.age : 0;
+      pill(x, y, w, h, 'rgba(12,24,20,0.78)');
+      if (flash > 0) { g.strokeStyle = levelColor(levelOf(d.flash.value) ?? 4, flash); g.lineWidth = 3; rounded(g, x, y, w, h, 6); g.stroke(); }
+      const lv = d.level;
+      g.textBaseline = 'middle'; g.textAlign = 'left';
+      g.font = `italic 700 30px ${SERIF}`;
+      const v = d.value || '—';
+      g.fillStyle = lv != null ? levelColor(lv) : C.chalkDim;
+      g.fillText(v, x + 10, y + 24);
+      const vw = g.measureText(v).width;
+      g.font = `700 14px ${FONT}`;
+      g.fillStyle = C.chalk;
+      g.fillText(d.wedge ? (d.wedge.kind === 'cresc' ? 'だんだん強く ↗' : 'だんだん弱く ↘') : (DYN_JA[d.value] || ''), x + 18 + vw, y + 25);
+      // 強さのメーター（帯と同じ色）
+      if (lv != null) {
+        g.fillStyle = 'rgba(240,243,234,0.12)'; g.fillRect(x + 10, y + 42, w - 20, 3);
+        g.fillStyle = levelColor(lv); g.fillRect(x + 10, y + 42, (w - 20) * Math.min(1, (lv + 0.6) / 7.6), 3);
+      }
+      if (d.next && lines === 2) {
+        const nlv = levelOf(d.next.value);
+        g.font = `700 14px ${FONT}`;
+        g.fillStyle = C.chalk;
+        const t1 = `あと${d.next.beatsLeft}拍で `;
+        g.fillText(t1, x + 10, y + 60);
+        const tw = g.measureText(t1).width;
+        g.font = `italic 700 20px ${SERIF}`;
+        g.fillStyle = nlv != null ? levelColor(nlv) : C.chalk;
+        g.fillText(d.next.value, x + 10 + tw, y + 59);
+        const bx = x + 10, bw = w - 20;
+        g.fillStyle = 'rgba(240,243,234,0.12)'; g.fillRect(bx, y + h - 5, bw, 2);
+        g.fillStyle = nlv != null ? levelColor(nlv) : C.chalk; g.fillRect(bx, y + h - 5, bw * Math.max(0, Math.min(1, d.next.progress)), 2);
+      } else if (d.wedge && lines === 2) {
+        g.fillStyle = 'rgba(240,243,234,0.12)'; g.fillRect(x + 10, y + 58, w - 20, 4);
+        g.fillStyle = C.chalk; g.fillRect(x + 10, y + 58, (w - 20) * d.wedge.progress, 4);
+      }
+      // 変わった瞬間: 再生位置に大きく
+      if (flash > 0) {
+        const fv = d.flash.value;
+        g.font = `italic 700 ${Math.round(96 + 24 * (1 - flash))}px ${SERIF}`;
+        g.textAlign = 'center';
+        g.fillStyle = levelColor(levelOf(fv) ?? 4, 0.55 * flash);
+        g.fillText(fv, px + (W - px) * 0.32, top + (bot - top) * 0.42);
+        g.textAlign = 'left';
+      }
+    }
+
+    // 息継ぎの合図（動いている間だけ）
+    const b = cue.breath;
+    if (s.running && b) {
+      if (b.state === 'soon') {
+        // 再生位置のそばに「あと◯拍でブレス」と、V の所に満ちていく輪
+        const label = `V あと${b.beatsLeft}拍でブレス`;
+        g.font = `700 16px ${FONT}`;
+        const tw = g.measureText(label).width + 20;
+        const lx = Math.min(W - tw - 6, px + 10), ly = top + 8;
+        pill(lx, ly, tw, 30, 'rgba(12,24,20,0.8)');
+        g.strokeStyle = C.breath; g.lineWidth = 2; rounded(g, lx, ly, tw, 30, 6); g.stroke();
+        g.fillStyle = C.breath; g.textBaseline = 'middle'; g.textAlign = 'left';
+        g.fillText(label, lx + 10, ly + 15.5);
+      } else {
+        // いま吸う: 再生位置の縦に空色の光と「すう」
+        const grd = g.createLinearGradient(px - 60, 0, px + 60, 0);
+        grd.addColorStop(0, 'rgba(147,201,236,0)');
+        grd.addColorStop(0.5, 'rgba(147,201,236,0.34)');
+        grd.addColorStop(1, 'rgba(147,201,236,0)');
+        g.fillStyle = grd;
+        g.fillRect(px - 60, top, 120, bot - top);
+        const label = 'V すう';
+        g.font = `800 30px ${FONT}`;
+        const tw = g.measureText(label).width + 28;
+        const lx = Math.min(W - tw - 6, px + 12), ly = top + 8;
+        pill(lx, ly, tw, 46, C.breath);
+        g.fillStyle = '#16302a'; g.textBaseline = 'middle'; g.textAlign = 'left';
+        g.fillText(label, lx + 14, ly + 24);
+      }
     }
   }
 
   drawKeys(activeMidi) {
-    const g = this.g, row = this.rowH, top = this.headH, bot = this.h - this.lyricH;
+    const g = this.g, row = this.rowH, top = this.noteTop, bot = this.h - this.lyricH;
     g.fillStyle = C.keyWhite;
     g.fillRect(0, 0, this.keyW, this.h);
     g.font = `600 ${Math.max(9, Math.min(13, row * 0.8))}px ${FONT}`;
@@ -295,6 +553,14 @@ export class Roll {
       }
       if (pc === 0 || pc === 5) { g.fillStyle = 'rgba(0,0,0,0.18)'; g.fillRect(0, y + row / 2 - 0.5, this.keyW, 1); }
     }
+    // 記号の帯の見出し
+    g.fillStyle = '#d9ded7';
+    g.fillRect(0, this.headH, this.keyW, this.exprH);
+    g.fillStyle = C.keyText;
+    g.font = `700 11px ${FONT}`;
+    g.textAlign = 'center';
+    g.fillText('歌い方', this.keyW / 2, this.headH + this.exprH / 2 + 0.5);
+    g.textAlign = 'left';
     g.fillStyle = '#6b5236';
     g.fillRect(this.keyW - 2, 0, 2, this.h);
   }

@@ -71,7 +71,10 @@
       <span class="bar-kicker" id="pr-part"></span>
       <span class="bar-song" id="pr-song"></span>
     </div>
-    <button class="btn btn-bar" type="button" data-open="sheet-settings">設定</button>
+    <div class="bar-actions">
+      <button class="btn btn-bar" type="button" id="btn-expr" aria-pressed="false">✎ 息継ぎ・強弱</button>
+      <button class="btn btn-bar" type="button" data-open="sheet-settings">設定</button>
+    </div>
   </header>
 
   <div class="phase" aria-live="polite">
@@ -106,6 +109,29 @@
     </nav>
   </div>
 
+  <!-- 息継ぎ・強弱を書きこむ（✎ を押したときだけ） -->
+  <div class="expr-bar" id="expr-bar" hidden>
+    <div class="expr-tools" role="radiogroup" aria-label="書きこむ記号" id="expr-tools">
+      <button type="button" role="radio" data-tool="breath" class="tool-breath">V<small>息継ぎ</small></button>
+      <button type="button" role="radio" data-tool="pp" class="tool-dyn">pp</button>
+      <button type="button" role="radio" data-tool="p" class="tool-dyn">p</button>
+      <button type="button" role="radio" data-tool="mp" class="tool-dyn">mp</button>
+      <button type="button" role="radio" data-tool="mf" class="tool-dyn">mf</button>
+      <button type="button" role="radio" data-tool="f" class="tool-dyn">f</button>
+      <button type="button" role="radio" data-tool="ff" class="tool-dyn">ff</button>
+      <button type="button" role="radio" data-tool="cresc" class="tool-wedge">&lt;<small>だんだん強く</small></button>
+      <button type="button" role="radio" data-tool="dim" class="tool-wedge">&gt;<small>だんだん弱く</small></button>
+      <button type="button" role="radio" data-tool="erase">消す</button>
+    </div>
+    <div class="expr-actions">
+      <button type="button" class="btn btn-quiet btn-small" id="btn-expr-auto" title="休符の前に、息継ぎをまとめて入れます">休符に V</button>
+      <button type="button" class="btn btn-quiet btn-small" id="btn-expr-undo">もどす</button>
+      <button type="button" class="btn btn-quiet btn-small" id="btn-expr-export" title="書きこんだ記号を入れた楽譜ファイルを作ります（配ると、ほかのiPadでも同じ合図が出ます）">書き出す</button>
+      <button type="button" class="btn btn-primary btn-small" id="btn-expr-done">おわる</button>
+    </div>
+    <p class="expr-help" id="expr-help"></p>
+  </div>
+
   <div class="board-wrap">
     <div class="board">
       <canvas id="roll" aria-label="お手本の音符と自分の声の高さ。指で左右に動かすと、始める位置を選べます"></canvas>
@@ -126,6 +152,7 @@
       <span class="chalk chalk-white"></span><span>お手本</span>
       <span class="chalk chalk-yellow"></span><span>あなたの声</span>
       <span class="chalk chalk-sky"></span><span>オクターブ違い</span>
+      <span class="tray-v">V</span><span>息継ぎ</span>
       <span class="tray-sep"></span>
       <span class="g g-great">◎</span><span>±25セント</span>
       <span class="g g-good">○</span><span>±50</span>
@@ -239,6 +266,7 @@
     <div class="set-row"><label for="vol-piano">ピアノ伴奏の音量</label><input id="vol-piano" type="range" min="0" max="100" step="5"></div>
     <div class="set-row"><label for="vol-click">クリックの音量</label><input id="vol-click" type="range" min="0" max="100" step="5"></div>
     <div class="set-row"><label><input type="checkbox" id="opt-record"> 録音を残す（聞き直し用。このiPadの中だけに保存します）</label></div>
+    <div class="set-row"><label><input type="checkbox" id="opt-cues"> 練習中に、息継ぎと強弱の合図を出す（「V すう」・「あと◯拍で f」）</label></div>
     <div class="set-row"><label><input type="checkbox" id="opt-listen"> 交互練習で、歌う前にお手本を聞く</label></div>
     <div class="set-row"><label><input type="checkbox" id="opt-preroll"> 通しで、始める位置の1小節前から伴奏を流す（入りやすくなります）</label></div>
     <div class="set-row"><label><input type="checkbox" id="opt-guide"> 通しで、自分のパートの音も鳴らす（マイクが拾いやすくなります）</label></div>

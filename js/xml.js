@@ -16,7 +16,7 @@ function decodeEntities(s) {
 
 export class XmlError extends Error {}
 
-/** @returns {{name:string, attrs:Object, children:Array, text:string}} ルート要素 */
+/** @returns {{name:string, attrs:Object, children:Array, text:string, start:number, innerStart:number, innerEnd:number, end:number}} ルート要素 */
 export function parseXml(src) {
   if (src.charCodeAt(0) === 0xfeff) src = src.slice(1);
   const root = { name: '#document', attrs: {}, children: [], text: '' };
@@ -56,6 +56,8 @@ export function parseXml(src) {
       const name = src.slice(lt + 2, end).trim();
       const top = stack.pop();
       if (!top || top.name !== name) throw new XmlError(`タグの対応が合いません: </${name}>`);
+      top.innerEnd = lt; // 閉じタグの '<' の位置（書き戻し用）
+      top.end = end + 1;
       i = end + 1;
     } else {
       // 開始タグ。属性値の中の > に注意して終わりを探す
@@ -72,7 +74,8 @@ export function parseXml(src) {
       if (body.endsWith('/')) { selfClose = true; body = body.slice(0, -1); }
       const m = /^([^\s/>]+)/.exec(body);
       if (!m) throw new XmlError('タグ名がありません');
-      const el = { name: m[1], attrs: {}, children: [], text: '' };
+      // start/innerStart/innerEnd/end = 元の文字列での位置（記号を書き足して書き出すときに使う）
+      const el = { name: m[1], attrs: {}, children: [], text: '', start: lt, innerStart: j + 1, innerEnd: j + 1, end: j + 1, selfClose };
       const re = /([^\s=]+)\s*=\s*("([^"]*)"|'([^']*)')/g;
       let a;
       const rest = body.slice(m[1].length);
