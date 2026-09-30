@@ -22,11 +22,13 @@ let roll = null, mini = null;
 
 // ---------------- 設定（端末内の localStorage） ----------------
 const DEFAULTS = {
-  mode: 'alt', segLen: 2, tempo: 80, volMine: 100, volOthers: 35, volPiano: 35, volClick: 70,
+  mode: 'alt', segLen: 2, tempo: 100, volMine: 100, volOthers: 35, volPiano: 35, volClick: 70,
   latencyMs: 0, listen: true, guide: false, clickThrough: false, preroll: true,
   record: true, reviewPiano: true, reviewBalance: 40, cues: true,
 };
 const settings = { ...DEFAULTS, ...readJSON('gassho-settings') };
+// 2026-09-30 オーナー裁定「テンポ、最初から100パーセントで」: 前に開いた iPad に残っている 80% も、1回だけ 100% に戻す
+if (settings.v !== 2) { settings.tempo = 100; settings.v = 2; saveSettings(); }
 // 合図と演出: karaoke（カラオケ風・はで）／calm（しずか: 帯と小さな札だけ）／off（出さない）
 if (!['karaoke', 'calm', 'off'].includes(settings.fx)) {
   const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
