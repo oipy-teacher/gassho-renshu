@@ -277,9 +277,11 @@ function computeNotes() {
 
 // ---------------- 歌い方の記号（息継ぎ・強弱） ----------------
 const userMarks = () => (S.rec && S.rec.expr && S.rec.expr.marks) || [];
+// 休符の自動の息継ぎは、入れない のが基本（2026-09-30 オーナー「ブレスは自分らで決めた方がよさそうだ」）。書きこみ画面で入れることもできる
+const autoBreathOn = () => !!(S.rec && S.rec.expr && S.rec.expr.autoBreath === true);
 function refreshExpr() {
   if (!S.score || !S.track) return;
-  S.expr = mergeExpr(S.score.expr, userMarks(), S.track, S.notes, { auto: !(S.rec.expr && S.rec.expr.noAuto) });
+  S.expr = mergeExpr(S.score.expr, userMarks(), S.track, S.notes, { auto: autoBreathOn() });
   roll.setExpr(S.expr, qToSec);
   S.dirty = true;
 }
@@ -310,8 +312,8 @@ function syncExprBar() {
   $('expr-help').textContent = S.pendingWedge ? 'つぎに、おわりの位置をタップしてください。' : EXPR_HELP[kind];
   $('btn-expr-undo').disabled = !S.undo.length;
   $('btn-expr-export').disabled = !userMarks().some((m) => m.type !== 'noauto');
-  const autoOn = !(S.rec && S.rec.expr && S.rec.expr.noAuto);
-  $('btn-expr-auto').textContent = autoOn ? '休符の V：自動' : '休符の V：なし';
+  const autoOn = autoBreathOn();
+  $('btn-expr-auto').textContent = autoOn ? '休符の V：自動で入れる' : '休符の V：入れない';
   $('btn-expr-auto').setAttribute('aria-pressed', String(autoOn));
   requestAnimationFrame(() => { roll.resize(); mini.resize(); S.dirty = true; });
 }
@@ -335,8 +337,8 @@ $('btn-expr-undo').addEventListener('click', () => {
 });
 $('btn-expr-auto').addEventListener('click', () => {
   // 休符の所の自動の息継ぎを、入れる／入れない（書きこんだ V はそのまま）
-  const on = !(S.rec.expr && S.rec.expr.noAuto);
-  S.rec.expr = { ...(S.rec.expr || { marks: [] }), noAuto: on };
+  const on = autoBreathOn();
+  S.rec.expr = { ...(S.rec.expr || { marks: [] }), autoBreath: !on };
   store.put(S.rec).catch(() => {});
   refreshExpr(); syncExprBar();
   toast(on ? '休符の自動の息継ぎを消しました。自分で書きこんだ V だけが出ます。' : '休符の所に、自動で息継ぎ（V）を入れました。いらない所は V をタップで消せます。', 5000);
