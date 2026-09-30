@@ -124,7 +124,7 @@
       <button type="button" role="radio" data-tool="erase">消す</button>
     </div>
     <div class="expr-actions">
-      <button type="button" class="btn btn-quiet btn-small" id="btn-expr-auto" title="休符の前に、息継ぎをまとめて入れます">休符に V</button>
+      <button type="button" class="btn btn-quiet btn-small" id="btn-expr-auto" aria-pressed="true" title="休符の所に、自動で息継ぎ（V）を入れるかどうか">休符の V：自動</button>
       <button type="button" class="btn btn-quiet btn-small" id="btn-expr-undo">もどす</button>
       <button type="button" class="btn btn-quiet btn-small" id="btn-expr-export" title="書きこんだ記号を入れた楽譜ファイルを作ります（配ると、ほかのiPadでも同じ合図が出ます）">書き出す</button>
       <button type="button" class="btn btn-primary btn-small" id="btn-expr-done">おわる</button>
@@ -137,6 +137,7 @@
       <canvas id="roll" aria-label="お手本の音符と自分の声の高さ。指で左右に動かすと、始める位置を選べます"></canvas>
       <div id="seg-card" class="seg-card" hidden>
         <p class="seg-card-label" id="seg-label"></p>
+        <p class="result-title" id="seg-title" hidden></p>
         <p class="seg-card-score"><b id="seg-score"></b><span>点</span></p>
         <p class="seg-card-grades" id="seg-grades"></p>
         <p class="seg-card-expr" id="seg-expr" hidden></p>
@@ -227,6 +228,7 @@
       <button class="btn btn-quiet" type="button" data-close="sheet-report">閉じる</button>
     </header>
     <p class="report-range" id="report-range"></p>
+    <p class="result-title" id="report-title-badge" hidden></p>
     <p class="report-score"><b id="report-score"></b><span>点</span></p>
     <p class="report-grades" id="report-grades"></p>
     <p class="report-expr" id="report-expr" hidden></p>

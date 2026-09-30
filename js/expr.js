@@ -27,7 +27,7 @@ export const levelOf = (v) => (v in DYN_LEVEL ? DYN_LEVEL[v] : null);
  * @param track     練習しているトラック（part・voice・key）
  * @param notes     そのトラックの音符（startQ・durQ）
  */
-export function mergeExpr(fileExpr, userMarks, track, notes) {
+export function mergeExpr(fileExpr, userMarks, track, notes, opts = {}) {
   const fe = fileExpr || { breaths: [], dyns: [], wedges: [], words: [], fermatas: [] };
   const mine = (x) => x.part === track.part;
   const sortedNotes = [...(notes || [])].sort((a, b) => a.startQ - b.startQ);
@@ -50,9 +50,18 @@ export function mergeExpr(fileExpr, userMarks, track, notes) {
   const byQ = (a, b) => a.q - b.q;
   breaths.sort(byQ); dyns.sort(byQ); words.sort(byQ); fermatas.sort(byQ);
   wedges.sort((a, b) => a.startQ - b.startQ);
-  // 同じ位置の息継ぎは1つに（ファイルと書きこみが重なったら、ファイルを残す）
+  // 楽譜に息継ぎが1つも無いパートは、休符の所を自動で息継ぎにする（書きこまなくても合図と判定が出る）
+  const fileHas = breaths.some((b) => b.source === 'file');
+  if (!fileHas && opts.auto !== false) {
+    const off = (userMarks || []).filter((m) => m.type === 'noauto' && m.track === track.key).map((m) => m.q);
+    for (const q of autoBreaths(notes || [])) if (!off.some((x) => Math.abs(x - q) < 1e-3)) breaths.push({ q, source: 'auto' });
+    breaths.sort(byQ);
+  }
+  // 同じ位置の息継ぎは1つに（ファイル → 書きこみ → 自動 の順に残す）
+  const rank = { file: 0, user: 1, auto: 2 };
   const uniq = [];
-  for (const b of breaths) if (!uniq.some((u) => Math.abs(u.q - b.q) < 1e-3)) uniq.push(b);
+  for (const b of [...breaths].sort((x, y) => rank[x.source] - rank[y.source])) if (!uniq.some((u) => Math.abs(u.q - b.q) < 1e-3)) uniq.push(b);
+  uniq.sort(byQ);
   return {
     breaths: uniq.map((b) => ({ ...b, zoneQ: breathZoneStart(b.q, sortedNotes) })),
     dyns, wedges, words, fermatas,
@@ -250,6 +259,46 @@ const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 const DYN_SOUND = { ppp: 18, pp: 36, p: 54, mp: 71, mf: 89, f: 106, ff: 124, fff: 141 };
 
 /**
+ * 方向記号（強弱・松葉など）を、指定のパートの指定の位置（q）に差し込む（元の文字列には差し込むだけ）
+ * @param items [{part(パートID), q, inner(<direction-type> の中身), sound?}]
+ * @returns { xml, placed, skipped }
+ */
+export function insertDirections(xml, score, items) {
+  if (xml.charCodeAt(0) === 0xfeff) xml = xml.slice(1);
+  const ins = [];
+  let placed = 0, skipped = 0;
+  for (const it of items) {
+    const at = directionAt(score, it.part, it.q);
+    if (!at) { skipped++; continue; }
+    ins.push({ at: at.at, text: `<direction placement="below"><direction-type>${it.inner}</direction-type>${at.offset}${it.sound || ''}</direction>` });
+    placed++;
+  }
+  return { xml: splice(xml, ins), placed, skipped };
+}
+
+/** その位置に音符（休符）の頭があればその前。なければ、手前でいちばん近い頭の前に置いて <offset> でずらす */
+function directionAt(score, part, q) {
+  const as = score.src.anchors.filter((a) => a.part === part);
+  let a = as.find((x) => !x.end && Math.abs(x.q - q) < 1e-6) || null;
+  if (!a) for (const x of as) if (x.q <= q + 1e-6 && (!a || x.q > a.q + 1e-9 || (Math.abs(x.q - a.q) < 1e-9 && a.end))) a = x;
+  if (!a) return null;
+  const off = Math.round((q - a.q) * a.div);
+  return { at: a.at, offset: off > 0 ? `<offset>${off}</offset>` : '' };
+}
+
+/** 後ろから差し込む（前の位置がずれないように）。同じ位置は入れた順を保つ */
+function splice(xml, ins) {
+  ins.forEach((x, i) => { x.i = i; });
+  ins.sort((a, b) => b.at - a.at || b.i - a.i);
+  let out = xml;
+  for (const x of ins) out = out.slice(0, x.at) + x.text + out.slice(x.at);
+  return out;
+}
+
+export const dynDirection = (value) => ({ inner: `<dynamics><${esc(value)}/></dynamics>`, sound: DYN_SOUND[value] ? `<sound dynamics="${DYN_SOUND[value]}"/>` : '' });
+export const wedgeDirection = (type) => ({ inner: `<wedge type="${type}" number="9"/>` });
+
+/**
  * 書きこんだ記号を MusicXML に書き足す（元の文字列に差し込むだけ。ほかの所は1文字も変えない）
  * @param xml       元の MusicXML（parseMusicXml に渡したのと同じ文字列）
  * @param score     parseMusicXml(xml) の結果
@@ -262,18 +311,10 @@ export function writeMarksToXml(xml, score, userMarks) {
   const added = { breath: 0, dyn: 0, wedge: 0 };
   let skipped = 0;
   const vocalParts = [...new Set(score.tracks.filter((t) => !t.isPiano).map((t) => t.part))];
-  const anchorsOf = (part) => score.src.anchors.filter((a) => a.part === part);
-
-  // 方向記号（強弱・松葉）を、その位置の音符（なければ直前の音符＋ずらし）の前に入れる
-  const direction = (part, q, inner, soundAttr = '') => {
-    const as = anchorsOf(part);
-    // 同じ位置に音符（休符）の頭があればその前。なければ、手前でいちばん近い頭の前に置いて <offset> でずらす
-    let a = as.find((x) => !x.end && Math.abs(x.q - q) < 1e-6) || null;
-    if (!a) for (const x of as) if (x.q <= q + 1e-6 && (!a || x.q > a.q + 1e-9 || (Math.abs(x.q - a.q) < 1e-9 && a.end))) a = x;
-    if (!a) return false;
-    const off = Math.round((q - a.q) * a.div);
-    const offset = off > 0 ? `<offset>${off}</offset>` : '';
-    ins.push({ at: a.at, text: `<direction placement="below"><direction-type>${inner}</direction-type>${offset}${soundAttr}</direction>` });
+  const direction = (part, q, d) => {
+    const at = directionAt(score, part, q);
+    if (!at) return false;
+    ins.push({ at: at.at, text: `<direction placement="below"><direction-type>${d.inner}</direction-type>${at.offset}${d.sound || ''}</direction>` });
     return true;
   };
 
@@ -290,25 +331,19 @@ export function writeMarksToXml(xml, score, userMarks) {
       else ins.push({ at: s.insertAt, text: '<notations><articulations><breath-mark/></articulations></notations>' });
       added.breath++;
     } else if (m.type === 'dyn') {
-      const snd = DYN_SOUND[m.value] ? `<sound dynamics="${DYN_SOUND[m.value]}"/>` : '';
       let ok = false;
-      for (const p of vocalParts) ok = direction(p, m.q, `<dynamics><${esc(m.value)}/></dynamics>`, snd) || ok;
+      for (const p of vocalParts) ok = direction(p, m.q, dynDirection(m.value)) || ok;
       if (ok) added.dyn++; else skipped++;
     } else if (m.type === 'wedge') {
       let ok = false;
       const type = m.value === 'cresc' ? 'crescendo' : 'diminuendo';
       for (const p of vocalParts) {
-        const a = direction(p, m.q, `<wedge type="${type}" number="9"/>`);
-        const b = a && direction(p, m.endQ, '<wedge type="stop" number="9"/>');
+        const a = direction(p, m.q, wedgeDirection(type));
+        const b = a && direction(p, m.endQ, wedgeDirection('stop'));
         ok = ok || (a && b);
       }
       if (ok) added.wedge++; else skipped++;
     }
   }
-  // 後ろから差し込む（前の位置がずれないように）。同じ位置は入れた順を保つ
-  ins.forEach((x, i) => { x.i = i; });
-  ins.sort((a, b) => b.at - a.at || b.i - a.i);
-  let out = xml;
-  for (const x of ins) out = out.slice(0, x.at) + x.text + out.slice(x.at);
-  return { xml: out, added, skipped };
+  return { xml: splice(xml, ins), added, skipped };
 }

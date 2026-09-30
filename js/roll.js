@@ -104,7 +104,7 @@ export class Roll {
     const e = this.expr;
     if (!e) return null;
     const cands = [
-      ...e.breaths.map((b) => ({ id: b.id, type: 'breath', x: this.xOf(b.sec, view) - 7, source: b.source })),
+      ...e.breaths.map((b) => ({ id: b.id, type: 'breath', x: this.xOf(b.sec, view) - 7, source: b.source, q: b.q })),
       ...e.dyns.map((d) => ({ id: d.id, type: 'dyn', x: this.xOf(d.sec, view) + 12, source: d.source })),
       ...e.wedges.map((w) => ({ id: w.id, type: 'wedge', x: this.xOf(w.startSec, view), x1: this.xOf(w.endSec, view), source: w.source })),
     ].filter((c) => !type || c.type === type);
@@ -258,6 +258,37 @@ export class Roll {
         g.font = `700 ${Math.min(14, Math.max(10, hh - 3))}px ${FONT}`;
         g.textAlign = 'left';
         g.fillText(res.octave ? '8' : res.grade, xs + 4, y + 0.5);
+      }
+    }
+
+    // 金のチョーク: 歌っている音符が、合っている所だけ金色に塗られていく（まだ判定していない音符だけ）
+    // 基準は採点と同じ: ±25セント＝明るい金（◎）、±50セント＝金（○）
+    if (s.gold && s.voice && s.voice.length) {
+      const fw = Math.max(1.6, this.pxPerSec * 0.012 * (s.gold.r || 1));
+      const lim = s.clip ? this.playX + 1 : W;
+      for (let i = s.voice.length - 1; i >= 0; i--) {
+        const f = s.voice[i];
+        const x = this.xOf(f.sec, view);
+        if (x < this.keyW - 4) break;
+        if (x > lim || f.midi == null) continue;
+        const t = this.noteAt(f.sec);
+        if (!t || (results && results.has(t.id))) continue;
+        let c = (f.midi - t.midi) * 100; c -= 1200 * Math.round(c / 1200); c = Math.abs(c);
+        if (c > 50) continue;
+        const hh = Math.max(6, row * 0.7);
+        g.fillStyle = c <= 25 ? '#ffe98a' : 'rgba(255,196,64,0.8)';
+        g.fillRect(x - fw / 2, this.yOf(t.midi) - hh / 2, fw, hh);
+      }
+      // 合っている間は、再生位置の所が金色に光る
+      const cur = this.noteAt(view);
+      if (s.clip && cur && s.liveMidi != null) {
+        let c = (s.liveMidi - cur.midi) * 100; c -= 1200 * Math.round(c / 1200);
+        if (Math.abs(c) <= 50) {
+          const y = this.yOf(cur.midi), R = Math.abs(c) <= 25 ? 34 : 24;
+          const grd = g.createRadialGradient(this.playX, y, 2, this.playX, y, R);
+          grd.addColorStop(0, 'rgba(255,240,170,0.95)'); grd.addColorStop(0.4, 'rgba(255,208,77,0.45)'); grd.addColorStop(1, 'rgba(255,208,77,0)');
+          g.fillStyle = grd; g.fillRect(this.playX - R, y - R, R * 2, R * 2);
+        }
       }
     }
 
@@ -454,7 +485,7 @@ export class Roll {
       g.beginPath(); g.moveTo(x, this.noteTop); g.lineTo(x, bot); g.stroke();
       g.setLineDash([]);
       if (x > this.keyW + 6) {
-        g.strokeStyle = C.breath; g.lineWidth = 3; g.lineCap = 'round'; g.lineJoin = 'round';
+        g.strokeStyle = b.source === 'auto' ? 'rgba(147,201,236,0.6)' : C.breath; g.lineWidth = b.source === 'auto' ? 2 : 3; g.lineCap = 'round'; g.lineJoin = 'round';
         g.beginPath(); g.moveTo(x - 13, y0 + 8); g.lineTo(x - 7, y0 + h - 8); g.lineTo(x - 1, y0 + 8); g.stroke();
       }
     }

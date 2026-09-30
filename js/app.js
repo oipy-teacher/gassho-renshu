@@ -2,7 +2,7 @@
 import { bytesToMusicXml } from './mxl.js';
 import { parseMusicXml, trackNotes, midiName, NOTE_NAMES_JA } from './musicxml.js';
 import { PitchTracker, hzToMidi, QUIET_DB, TOO_QUIET_DB } from './pitch.js';
-import { evaluateNotes, summarize, rangeLabel } from './scoring.js';
+import { evaluateNotes, evaluateNote, summarize, rangeLabel } from './scoring.js';
 import { AudioEngine, PIANO_GAIN } from './audio.js';
 import { Roll } from './roll.js';
 import { Minimap, hitEdge } from './minimap.js';
@@ -10,7 +10,7 @@ import { store, hashText, listTakes, putTake, removeTake, clearTakes } from './s
 import { ClipRecorder, makeTake, reviewFrames, reviewClips, adpcmDecode } from './recorder.js';
 import { sections, sectionOf } from './marks.js';
 import { mergeExpr, cueAt, entryHint, autoBreaths, snapToNoteHead, writeMarksToXml, DYN_PALETTE, levelOf, judgeBreath, judgeWedge, judgeDyn, judgeTargets } from './expr.js';
-import { Fx } from './fx.js';
+import { Fx, phraseWord } from './fx.js';
 import {
   beatGrid, buildSnaps, snapQ, measureIndexAt, stepBeat, stepMeasure, posLabel, endLabel,
   setRangeEdge, dragRangeEdge, segmentsFrom, countInBeats, Inertia, releaseVelocity, joinLyrics, searchLyrics,
@@ -55,7 +55,7 @@ const S = {
   lastReport: null,
   inertia: null, anim: null, drag: null, dirty: true,
   takes: [], review: null, live: null, lastTakeId: null,
-  expr: null,                      // 歌い方の記号（ファイル＋書きこみ）。mergeExpr の結果
+  expr: null,                      // 歌い方の記号（ファイル＋書きこみ＋休符の自動）。mergeExpr の結果
   editing: false, tool: 'breath', pendingWedge: null, undo: [],
 };
 
@@ -277,14 +277,14 @@ function computeNotes() {
 const userMarks = () => (S.rec && S.rec.expr && S.rec.expr.marks) || [];
 function refreshExpr() {
   if (!S.score || !S.track) return;
-  S.expr = mergeExpr(S.score.expr, userMarks(), S.track, S.notes);
+  S.expr = mergeExpr(S.score.expr, userMarks(), S.track, S.notes, { auto: !(S.rec.expr && S.rec.expr.noAuto) });
   roll.setExpr(S.expr, qToSec);
   S.dirty = true;
 }
 function setUserMarks(marks) {
   S.undo.push(JSON.stringify(userMarks()));
   if (S.undo.length > 40) S.undo.shift();
-  S.rec.expr = { marks };
+  S.rec.expr = { ...(S.rec.expr || {}), marks };
   clearTimeout(setUserMarks.t);
   setUserMarks.t = setTimeout(() => store.put(S.rec).catch(() => toast('この端末に保存できませんでした。')), 400);
   refreshExpr();
@@ -307,7 +307,10 @@ function syncExprBar() {
   const kind = S.tool === 'breath' ? 'breath' : S.tool === 'erase' ? 'erase' : S.tool === 'cresc' || S.tool === 'dim' ? 'wedge' : 'dyn';
   $('expr-help').textContent = S.pendingWedge ? 'つぎに、おわりの位置をタップしてください。' : EXPR_HELP[kind];
   $('btn-expr-undo').disabled = !S.undo.length;
-  $('btn-expr-export').disabled = !userMarks().length;
+  $('btn-expr-export').disabled = !userMarks().some((m) => m.type !== 'noauto');
+  const autoOn = !(S.rec && S.rec.expr && S.rec.expr.noAuto);
+  $('btn-expr-auto').textContent = autoOn ? '休符の V：自動' : '休符の V：なし';
+  $('btn-expr-auto').setAttribute('aria-pressed', String(autoOn));
   requestAnimationFrame(() => { roll.resize(); mini.resize(); S.dirty = true; });
 }
 $('btn-expr').addEventListener('click', () => {
@@ -323,17 +326,18 @@ $('expr-tools').addEventListener('click', (e) => {
 });
 $('btn-expr-undo').addEventListener('click', () => {
   if (!S.undo.length) return;
-  S.rec.expr = { marks: JSON.parse(S.undo.pop()) };
+  S.rec.expr = { ...(S.rec.expr || {}), marks: JSON.parse(S.undo.pop()) };
   store.put(S.rec).catch(() => {});
   S.pendingWedge = null;
   refreshExpr(); syncExprBar();
 });
 $('btn-expr-auto').addEventListener('click', () => {
-  const have = S.expr.breaths.map((b) => b.q);
-  const add = autoBreaths(S.notes).filter((q) => !have.some((h) => near(h, q)));
-  if (!add.length) { toast('休符の前に、新しく入れられる所はありませんでした。'); return; }
-  setUserMarks([...userMarks(), ...add.map((q) => ({ id: newId(), type: 'breath', q, track: S.track.key }))]);
-  toast(`休符の所に ${add.length} か所、息継ぎを入れました。いらない所は「消す」か、V をもう一度タップで消せます。`, 5500);
+  // 休符の所の自動の息継ぎを、入れる／入れない（書きこんだ V はそのまま）
+  const on = !(S.rec.expr && S.rec.expr.noAuto);
+  S.rec.expr = { ...(S.rec.expr || { marks: [] }), noAuto: on };
+  store.put(S.rec).catch(() => {});
+  refreshExpr(); syncExprBar();
+  toast(on ? '休符の自動の息継ぎを消しました。自分で書きこんだ V だけが出ます。' : '休符の所に、自動で息継ぎ（V）を入れました。いらない所は V をタップで消せます。', 5000);
 });
 $('btn-expr-export').addEventListener('click', async () => {
   const marks = userMarks();
@@ -363,6 +367,7 @@ function editTap(p) {
   if (tool === 'erase') {
     const hit = roll.userMarkHit(p.x, S.view);
     if (!hit) { toast('消したい記号（V・強弱・松葉）の上をタップしてください。'); return; }
+    if (hit.source === 'auto') { setUserMarks([...marks, { id: newId(), type: 'noauto', q: hit.q, track: S.track.key }]); return; }
     if (hit.source !== 'user') { toast('楽譜ファイルにもとから書いてある記号は消せません。'); return; }
     setUserMarks(marks.filter((m) => m.id !== hit.id));
     return;
@@ -372,6 +377,7 @@ function editTap(p) {
     const mine = marks.find((m) => m.type === 'breath' && m.track === S.track.key && near(m.q, qq));
     if (mine) { setUserMarks(marks.filter((m) => m !== mine)); return; }
     if (S.expr.breaths.some((b) => b.source === 'file' && near(b.q, qq))) { toast('ここには楽譜ファイルに息継ぎが書いてあります。'); return; }
+    if (S.expr.breaths.some((b) => b.source === 'auto' && near(b.q, qq))) { setUserMarks([...marks, { id: newId(), type: 'noauto', q: qq, track: S.track.key }]); return; } // 自動の V を消す
     setUserMarks([...marks, { id: newId(), type: 'breath', q: qq, track: S.track.key }]);
     return;
   }
@@ -893,9 +899,52 @@ const beatSecAt = (sec) => { const q = secToQ(sec); const m = S.measures[measure
 const EMPTY_TALLY = () => ({ breath: [0, 0], wedge: [0, 0], dyn: [0, 0] });
 function prepJudges(run, seg) {
   run.judge = cuesOn() ? { list: judgeTargets(roll.expr, seg.startSec, seg.noteEnd, beatSecAt), done: new Set() } : null;
+  // 1音ずつの判定（歌い終わった直後に色がつく・コンボ）と、フレーズ（息継ぎ・休符まで）の一語
+  const notes = [...seg.notes].sort((a, b) => a.startSec - b.startSec);
+  const cuts = new Set((S.expr ? S.expr.breaths : []).map((b) => b.q.toFixed(4)));
+  const phrases = [];
+  let cur = [];
+  notes.forEach((n, i) => {
+    const prev = notes[i - 1];
+    if (cur.length && (cuts.has(n.startQ.toFixed(4)) || n.startQ - (prev.startQ + prev.durQ) >= 0.5 - 1e-6)) { phrases.push(cur); cur = []; }
+    cur.push(n);
+  });
+  if (cur.length) phrases.push(cur);
+  run.live = {
+    notes, idx: 0, from: 0, res: new Map(),
+    phrases: phrases.map((ns) => ({ ids: ns.map((n) => n.id), last: notes.indexOf(ns[ns.length - 1]), done: false, lenQ: ns.reduce((a, n) => a + n.durQ, 0) })),
+  };
   run.segExpr = run.segExpr || new Map();
   run.segExpr.set(run.segIdx, EMPTY_TALLY());
 }
+/** 歌い終わった音符から順に判定（採点と同じ関数なので、あとの ◎○△× と食い違わない） */
+function checkLive(run) {
+  const L = run.live, cap = run.cap;
+  if (!L || !cap || !cap.frames.length) return;
+  const upTo = cap.frames[cap.frames.length - 1].sec;
+  const now = performance.now(), karaoke = settings.fx === 'karaoke';
+  while (L.idx < L.notes.length && L.notes[L.idx].endSec + 0.1 * run.r <= upTo) {
+    const n = L.notes[L.idx], prev = L.notes[L.idx - 1];
+    const ev = evaluateNote(n, cap.frames, run.r, L.from, prev);
+    L.from = ev.nextIdx;
+    L.idx++;
+    if (ev.status === 'nodata') continue;
+    L.res.set(n.id, ev);
+    S.results.set(n.id, ev);
+    if (karaoke) fx.note(now, ev.grade, roll.xOf(n.endSec, S.view), roll.yOf(n.midi), fxBox());
+  }
+  for (const p of L.phrases) {
+    if (p.done || p.last >= L.idx) continue; // フレーズの最後の音まで判定が済んだら
+    p.done = true;
+    const rs = p.ids.map((id) => L.res.get(id)).filter(Boolean);
+    if (!rs.length || (p.ids.length < 2 && p.lenQ < 1)) continue;
+    const w = rs.reduce((a, r) => a + r.weight, 0);
+    const score = rs.reduce((a, r) => a + r.weight * (r.score || 0), 0) / w;
+    p.score = score;
+    if (karaoke) fx.phrase(now, phraseWord(score), fxBox());
+  }
+}
+
 function checkJudges(run, final) {
   const J = run.judge, cap = run.cap;
   if (!J || !cap || !cap.frames.length) return;
@@ -914,6 +963,22 @@ function checkJudges(run, final) {
     else if (res.ok) toast(t.kind === 'breath' ? 'ナイス息継ぎ！' : '強弱、決まった！', 1200);
   }
 }
+/** 区切りや通しの称号（太鼓の達人の王冠: 銀＝歌いきった／金＝全部○以上／虹＝全部◎） */
+function titleOf(res) {
+  const rs = (res || []).filter((x) => x.status !== 'nodata');
+  if (!rs.length) return null;
+  if (rs.every((x) => x.grade === '◎')) return { cls: 'rainbow', text: 'ALL PERFECT　全部ぴったり！' };
+  if (rs.every((x) => x.grade === '◎' || x.grade === '○')) return { cls: 'gold', text: 'FULL COMBO　音程が全部つながった！' };
+  if (rs.every((x) => x.status === 'sung')) return { cls: 'silver', text: '歌いきった！' };
+  return null;
+}
+function setTitle(el, t) {
+  el.hidden = !t || !cuesOn();
+  if (!t) return;
+  el.className = 'result-title title-' + t.cls;
+  el.textContent = t.text;
+}
+
 function exprText(t) {
   if (!t) return '';
   const parts = [];
@@ -963,6 +1028,7 @@ function finishSegment() {
   $('seg-label').textContent = seg.label + (run.loop ? `（${run.round}回目）` : `（${run.segIdx + 1}/${run.segs.length}）`);
   $('seg-score').textContent = sum.score;
   $('seg-grades').textContent = gradeText(sum.gradeCount);
+  setTitle($('seg-title'), titleOf(res));
   const et = exprText(run.segExpr && run.segExpr.get(run.segIdx));
   $('seg-expr').textContent = et;
   $('seg-expr').hidden = !et;
@@ -996,6 +1062,7 @@ function finishRun() {
   sum.tempo = run.r;
   sum.modeText = run.kind === 'through' ? '通し（試験的）' : run.loop ? 'くり返し練習' : '交互練習';
   sum.exprText = exprText(sumTally(run));
+  sum.title = titleOf(all);
   sum.takeId = null;
   showReport(sum, true);
   saveTake(run, sum);
@@ -1228,6 +1295,7 @@ function frame(now) {
         if (S.quiet) updatePhase('sing', '声が小さすぎて音程が拾えません。もう少しiPadに近づいてみましょう。', true);
         else updatePhase('sing', run.kind === 'alt' ? `${where}：歌ってください（鳴るのはクリックだけ）` : `${where}：伴奏に合わせて歌ってください。`);
       }
+      if (run.cap && cuesOn()) checkLive(run);
       if (run.cap) checkJudges(run, false);
       if (S.run && ctxNow >= run.evalAt) {
         if (run.cap) checkJudges(run, true);
@@ -1300,6 +1368,7 @@ function draw(o = {}) {
     view: S.view,
     cue,
     fx: settings.fx,
+    gold: cuesOn() && run && run.cap && o.clip ? { r: run.r } : null,
     shake: karaoke ? fx.shake(now) : null,
     running,
     editing: S.editing,
@@ -1486,6 +1555,7 @@ function showReport(sum, fresh) {
   $('report-range').textContent = [sum.rangeText, sum.modeText, sum.tempo ? `テンポ${Math.round(sum.tempo * 100)}%` : ''].filter(Boolean).join('・');
   $('report-score').textContent = sum.score;
   $('report-grades').textContent = gradeText(sum.gradeCount);
+  setTitle($('report-title-badge'), sum.title);
   $('report-expr').textContent = sum.exprText || '';
   $('report-expr').hidden = !sum.exprText;
   const ul = $('report-comments');
@@ -1597,4 +1667,4 @@ async function renderEvents(events, seconds, opts = {}) {
   return { sr: buf.sampleRate, chans: out };
 }
 window.__gasshoRefresh = () => refreshTakes();
-window.__gassho = { PIANO_GAIN, S, settings, engine, renderCheck, renderNote, renderPianoPart, renderEvents, cursorQ, qToSec, secToQ, rollObj: roll, miniObj: mini };
+window.__gassho = { PIANO_GAIN, S, settings, engine, fx, renderCheck, renderNote, renderPianoPart, renderEvents, cursorQ, qToSec, secToQ, rollObj: roll, miniObj: mini };

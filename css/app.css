@@ -225,6 +225,10 @@ b { font-weight: 700; }
 .seg-card-score b { font-size: 54px; line-height: 1; }
 .seg-card-score span { font-size: 18px; margin-left: 4px; }
 .seg-card-grades { margin: 0; font-size: 15px; color: var(--sub); }
+.result-title { margin: 6px 0 2px; display: inline-block; padding: 3px 12px; border-radius: 999px; font-weight: 800; font-size: 15px; letter-spacing: .02em; }
+.title-silver { background: linear-gradient(135deg, #eef1f3, #b9c2c9); color: #2b3338; }
+.title-gold { background: linear-gradient(135deg, #fff1a8, #f4b93a); color: #4a2a06; }
+.title-rainbow { background: linear-gradient(90deg, #ff9a9a, #ffd36e, #a6ef8c, #86d3ff, #c4a6ff); color: #241634; }
 .seg-card-expr, .report-expr { margin: 4px 0 0; font-weight: 700; color: #9a5a00; font-size: 15px; }
 .report-expr { margin: 0 0 10px; }
 .seg-card-comment { margin: 8px 0 12px; font-size: 16px; }

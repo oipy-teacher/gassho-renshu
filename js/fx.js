@@ -3,12 +3,25 @@
 //   だんだん強く！！ … 進むほど文字が大きく・赤く・「！」が増え、火の粉が舞い上がる
 //   だんだん弱く…   … 進むほど文字が小さく・淡く、雪のように粒が降りる
 //   f／p           … 強くなる所は大きな文字が落ちてきて画面がゆれる。弱くなる所はふわっと現れる
-//   決まった！      … 声で判定して成功したら金色の文字と星・コンボ
+//   決まった！      … 声で判定して成功したら金色の文字と星
+//   音程            … 1音ごとに ◎○ ならコンボ。10・20・30…で大きく出る。16 コンボで FEVER（虹の枠と金の粒）
+//   フレーズ        … 息継ぎ（または休符）までの1かたまりを、PERFECT／EXCELLENT／GREAT／NICE の一語でほめる。
+//                     それより下は何も出さない（DAM が低い区間に光を出さないのと同じ考え方）
 // 画面の文字はすべて日本語。粒の数は上限つき（iPad で重くならないように）
 
 const FONT = '"Hiragino Maru Gothic ProN", "Hiragino Sans", "Noto Sans JP", sans-serif';
 const SERIF = '"Times New Roman", "Hiragino Mincho ProN", serif';
-const MAX_PARTS = 240;
+const MAX_PARTS = 260;
+export const FEVER_AT = 16;               // この数だけ ◎○ が続いたら FEVER
+const MILESTONES = new Set([10, 20, 30, 40, 50, 75, 100, 150, 200, 300]);
+/** フレーズの点（0〜100）→ ほめる一語（下は出さない） */
+export function phraseWord(score) {
+  if (score >= 92) return { word: 'PERFECT!!', sub: 'ぴったり！', tone: 'rainbow' };
+  if (score >= 82) return { word: 'EXCELLENT!', sub: 'すごくいい！', tone: 'gold' };
+  if (score >= 70) return { word: 'GREAT!', sub: 'いいね！', tone: 'orange' };
+  if (score >= 55) return { word: 'NICE', sub: 'その調子', tone: 'sky' };
+  return null;
+}
 const SKY = [147, 201, 236], GOLD = [255, 208, 77], HOT = [255, 120, 60], CHALK = [240, 243, 234];
 const mix = (a, b, k) => a.map((v, i) => Math.round(v + (b[i] - v) * k));
 const rgba = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
@@ -22,14 +35,46 @@ export class Fx {
   constructor() {
     this.items = [];   // 文字の演出 {kind, t0, dur, ...}
     this.parts = [];   // 粒 {x,y,vx,vy,life,age,size,color,kind}
-    this.combo = 0;
+    this.combo = 0;       // 音程のコンボ（◎○ が続いた数）
     this.comboAt = 0;
+    this.best = 0;
+    this.fever = false; this.feverT0 = 0; this.feverEnd = 0;
     this.shakeUntil = 0; this.shakeAmp = 0;
     this.last = 0;
     this.wedgeT0 = 0; this.wedgeKey = null;
   }
 
-  reset() { this.items = []; this.parts = []; this.combo = 0; this.shakeAmp = 0; this.wedgeKey = null; }
+  reset() { this.items = []; this.parts = []; this.combo = 0; this.best = 0; this.fever = false; this.shakeAmp = 0; this.wedgeKey = null; }
+
+  /** 1音の判定（歌い終わった直後）。x, y = その音符の終わりの所 */
+  note(now, grade, x, y, box) {
+    const ok = grade === '◎' || grade === '○';
+    if (ok) {
+      this.combo++; this.comboAt = now; this.best = Math.max(this.best, this.combo);
+      const n = grade === '◎' ? 10 : 5;
+      for (let i = 0; i < n; i++) {
+        const ang = Math.random() * Math.PI * 2, sp = 0.05 + Math.random() * 0.12;
+        this.add({ kind: 'spark', x, y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp - 0.04, life: 350 + Math.random() * 250, size: grade === '◎' ? 2.2 : 1.6, color: grade === '◎' ? GOLD : CHALK });
+      }
+      if (MILESTONES.has(this.combo)) this.items.push({ kind: 'milestone', t0: now, dur: 1300, n: this.combo });
+      if (this.combo === FEVER_AT && !this.fever) { this.fever = true; this.feverT0 = now; this.items.push({ kind: 'feverIn', t0: now, dur: 1600 }); }
+    } else {
+      this.combo = 0;
+      if (this.fever) { this.fever = false; this.feverEnd = now; }
+    }
+  }
+
+  /** フレーズをほめる一語 */
+  phrase(now, w, box) {
+    if (!w) return;
+    this.items.push({ kind: 'phrase', t0: now, dur: 1250, ...w });
+    const cx = Math.max(box.keyW + 120, box.px - (box.px - box.keyW) * 0.45), cy = box.top + (box.bot - box.top) * 0.62;
+    const col = w.tone === 'rainbow' ? null : w.tone === 'gold' ? GOLD : w.tone === 'orange' ? HOT : SKY;
+    for (let i = 0; i < (w.tone === 'rainbow' ? 26 : 14); i++) {
+      const ang = Math.random() * Math.PI * 2, sp = 0.1 + Math.random() * 0.25;
+      this.add({ kind: 'star', x: cx, y: cy, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp - 0.04, life: 600 + Math.random() * 400, size: 3 + Math.random() * 3, color: col || hueRgb(Math.random() * 360), rot: Math.random() * 6 });
+    }
+  }
 
   /** いまのゆれ（黒板ごとずらす量） */
   shake(now) {
@@ -55,7 +100,7 @@ export class Fx {
     this.items.push({ kind: 'slam', t0: now, dur: loud ? 1250 : 1150, value, level, loud, soft });
     const cx = box.px + (box.W - box.px) * 0.34, cy = box.top + (box.bot - box.top) * 0.45;
     if (loud) {
-      this.shakeUntil = now + 380; this.shakeAmp = level >= 6 ? 11 : 7;
+      this.shakeUntil = now + 300; this.shakeAmp = level >= 6 ? 4 : 2.5; // 歌いながら楽譜を見るので、ゆれは小さく
       for (let i = 0; i < (level >= 6 ? 60 : 40); i++) {
         const ang = Math.random() * Math.PI * 2, sp = 0.35 + Math.random() * 0.6;
         this.add({ kind: 'spark', x: cx, y: cy, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: 500 + Math.random() * 400, size: 2 + Math.random() * 3, color: Math.random() < 0.5 ? HOT : GOLD });
@@ -72,11 +117,10 @@ export class Fx {
 
   /** 声で判定した結果。ok なら金色＋星＋コンボ、だめなら小さく励ます */
   judge(now, kind, ok, info, box) {
-    if (ok) { this.combo++; this.comboAt = now; } else this.combo = 0;
     const text = ok
       ? (kind === 'breath' ? 'ナイス息継ぎ！' : kind === 'wedge' ? (info.wedge === 'cresc' ? 'クレッシェンド 決まった！' : 'ディミヌエンド 決まった！') : `${info.value} 決まった！`)
       : (kind === 'breath' ? '息継ぎ、次はしっかり！' : kind === 'wedge' ? (info.wedge === 'cresc' ? 'おしい！もっと強く！' : 'おしい！もっと弱く…') : (info.to > info.from ? 'おしい！もっと強く！' : 'おしい！もっと弱く…'));
-    this.items.push({ kind: 'judge', t0: now, dur: ok ? 1300 : 1100, text, ok, combo: this.combo });
+    this.items.push({ kind: 'judge', t0: now, dur: ok ? 1300 : 1100, text, ok });
     if (ok) {
       const cx = box.px + (box.W - box.px) * 0.5, cy = box.top + 44;
       for (let i = 0; i < 14; i++) {
@@ -107,6 +151,10 @@ export class Fx {
       }
     }
 
+    // FEVER: 黒板のまわりが虹色に光り、金の粒が音符から立ちのぼる
+    const fk = this.fever ? Math.min(1, (now - this.feverT0) / 400) : Math.max(0, 1 - (now - this.feverEnd) / 500);
+    if (fk > 0) this.drawFever(g, box, now, fk, dt);
+
     // だんだん強く／弱く（続いている間ずっと）
     if (st.running && st.wedge) this.drawWedge(g, box, now, st.wedge, dt);
     else this.wedgeKey = null;
@@ -124,10 +172,13 @@ export class Fx {
       if (it.kind === 'breath') this.drawBreath(g, box, now - it.t0, t);
       else if (it.kind === 'slam') this.drawSlam(g, box, now - it.t0, t, it);
       else if (it.kind === 'judge') this.drawJudge(g, box, now - it.t0, t, it);
+      else if (it.kind === 'phrase') this.drawPhrase(g, box, now - it.t0, t, it, now);
+      else if (it.kind === 'milestone') this.drawMilestone(g, box, now - it.t0, t, it);
+      else if (it.kind === 'feverIn') this.drawFeverIn(g, box, now - it.t0, t);
     }
 
-    // コンボ
-    if (this.combo >= 2 && now - this.comboAt < 6000) this.drawCombo(g, box, now);
+    // コンボ（音程）
+    if (this.combo >= 3) this.drawCombo(g, box, now);
     g.restore();
   }
 
@@ -162,13 +213,13 @@ export class Fx {
     // 「息継ぎ！」
     const s = ms < 260 ? 0.35 + 0.65 * easeOutBack(ms / 260) : 1;
     const a = t > 0.72 ? 1 - (t - 0.72) / 0.28 : 1;
-    const x = Math.min(box.W - 150, cx + 150), y = cy - 36;
+    const x = Math.min(box.W - 130, cx + 130), y = box.top + (box.bot - box.top) * 0.3; // フレーズの一語（左下）・判定（上）と重ならない所
     g.save();
     g.globalAlpha = a;
     g.translate(x, y); g.scale(s, s); g.rotate(-0.05);
-    g.font = `900 64px ${FONT}`;
+    g.font = `900 52px ${FONT}`;
     g.textAlign = 'center'; g.textBaseline = 'middle';
-    const grd = g.createLinearGradient(0, -34, 0, 34);
+    const grd = g.createLinearGradient(0, -28, 0, 28);
     grd.addColorStop(0, '#ffffff'); grd.addColorStop(1, rgba(SKY));
     g.shadowColor = rgba(SKY, 0.9); g.shadowBlur = 24;
     g.lineJoin = 'round'; g.strokeStyle = '#123a4e'; g.lineWidth = 11;
@@ -176,7 +227,7 @@ export class Fx {
     g.shadowBlur = 0;
     g.fillStyle = grd; g.fillText('息継ぎ！', 0, 0);
     g.font = `800 20px ${FONT}`;
-    outlined(g, 'すって〜', 0, 50, '#e8f6ff', 6);
+    outlined(g, 'すって〜', 0, 42, '#e8f6ff', 6);
     g.restore();
   }
 
@@ -277,21 +328,101 @@ export class Fx {
 
   drawCombo(g, box, now) {
     const since = now - this.comboAt;
-    const s = since < 240 ? 1 + 0.5 * (1 - easeOut(since / 240)) : 1;
-    const x = box.W - 18, y = box.top + 30;
-    const hot = this.combo >= 3;
+    const s = since < 200 ? 1 + 0.35 * (1 - easeOut(since / 200)) : 1;
+    const x = box.W - 16, y = box.top + 30;
     g.save();
     g.translate(x, y); g.scale(s, s);
     g.textAlign = 'right'; g.textBaseline = 'middle';
-    g.font = `900 34px ${FONT}`;
-    g.shadowColor = hot ? 'rgba(255,120,60,0.9)' : 'rgba(255,208,77,0.8)'; g.shadowBlur = hot ? 26 : 14;
+    g.font = `900 38px ${FONT}`;
+    const fill = this.fever ? rgba(hueRgb((now / 6) % 360)) : this.combo >= 10 ? '#ffd04d' : '#fff3c4';
+    g.shadowColor = this.fever ? 'rgba(255,255,255,0.8)' : 'rgba(255,208,77,0.7)'; g.shadowBlur = this.fever ? 24 : 12;
     g.lineJoin = 'round'; g.strokeStyle = '#3a1a06'; g.lineWidth = 8;
-    const text = `${this.combo} コンボ${hot ? '！' : ''}`;
+    g.strokeText(String(this.combo), 0, 0);
+    g.shadowBlur = 0;
+    g.fillStyle = fill; g.fillText(String(this.combo), 0, 0);
+    g.font = `800 14px ${FONT}`;
+    outlined(g, this.fever ? 'FEVER コンボ' : 'コンボ', 0, 27, '#fff0c8', 4);
+    g.restore();
+  }
+
+  drawFever(g, box, now, k, dt) {
+    const w = 7;
+    const hue = (now / 5) % 360;
+    const grd = g.createLinearGradient(box.keyW, 0, box.W, box.H);
+    for (let i = 0; i <= 6; i++) grd.addColorStop(i / 6, rgba(hueRgb(hue + i * 60), 0.85 * k));
+    g.strokeStyle = grd; g.lineWidth = w;
+    const y0 = box.top - 34; // 記号の帯（歌い方）も含めて囲む
+    g.strokeRect(box.keyW + w / 2, y0 + w / 2, box.W - box.keyW - w, box.bot - y0 - w);
+    // 金の粒がゆっくり立ちのぼる
+    if (this.fever && Math.random() < 0.06 * dt / 16) {
+      this.add({ kind: 'ember', x: box.keyW + Math.random() * (box.W - box.keyW), y: box.bot, vx: 0, vy: -(0.05 + Math.random() * 0.05), life: 1600, size: 1.5 + Math.random() * 2, color: Math.random() < 0.5 ? GOLD : hueRgb(Math.random() * 360) });
+    }
+  }
+
+  drawFeverIn(g, box, ms, t) {
+    const x0 = box.W + 40, x1 = box.keyW + (box.W - box.keyW) / 2;
+    const x = ms < 300 ? x0 + (x1 - x0) * easeOutBack(ms / 300) : ms > 1250 ? x1 - (ms - 1250) * 2.2 : x1;
+    const y = box.top + (box.bot - box.top) * 0.36;
+    g.save();
+    g.translate(x, y); g.rotate(-0.06);
+    g.font = `italic 900 76px ${FONT}`;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    const grd = g.createLinearGradient(-200, 0, 200, 0);
+    for (let i = 0; i <= 6; i++) grd.addColorStop(i / 6, rgba(hueRgb(ms / 3 + i * 55)));
+    g.shadowColor = 'rgba(255,255,255,0.9)'; g.shadowBlur = 26;
+    g.lineJoin = 'round'; g.strokeStyle = '#2a0f3a'; g.lineWidth = 12;
+    g.strokeText('FEVER!!', 0, 0);
+    g.shadowBlur = 0;
+    g.fillStyle = grd; g.fillText('FEVER!!', 0, 0);
+    g.font = `900 22px ${FONT}`;
+    outlined(g, `音程 ${FEVER_AT} 連続！`, 0, 52, '#fff7d6', 6);
+    g.restore();
+  }
+
+  drawMilestone(g, box, ms, t, it) {
+    const x = box.W - 110, y = box.top + 86;
+    const s = ms < 220 ? 0.4 + 0.6 * easeOutBack(ms / 220) : 1;
+    const a = t > 0.7 ? 1 - (t - 0.7) / 0.3 : 1;
+    g.save();
+    g.globalAlpha = a;
+    g.translate(Math.min(x, box.W - 120), y); g.scale(s, s);
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.font = `900 34px ${FONT}`;
+    g.shadowColor = 'rgba(255,208,77,0.9)'; g.shadowBlur = 20;
+    g.lineJoin = 'round'; g.strokeStyle = '#3a1a06'; g.lineWidth = 8;
+    const text = `${it.n} コンボ！`;
     g.strokeText(text, 0, 0);
     g.shadowBlur = 0;
-    g.fillStyle = hot ? '#ff9b5a' : '#ffd04d'; g.fillText(text, 0, 0);
-    g.font = `800 13px ${FONT}`;
-    outlined(g, '歌い方', 0, 26, '#fff0c8', 4);
+    g.fillStyle = '#ffd04d'; g.fillText(text, 0, 0);
+    g.restore();
+  }
+
+  drawPhrase(g, box, ms, t, it, now) {
+    const cx = Math.max(box.keyW + 120, box.px - (box.px - box.keyW) * 0.45), cy = box.top + (box.bot - box.top) * 0.62 - 20 * easeOut(Math.min(1, t * 1.5));
+    const s = ms < 200 ? 0.3 + 0.7 * easeOutBack(ms / 200) : 1;
+    const a = t > 0.72 ? 1 - (t - 0.72) / 0.28 : 1;
+    const big = it.tone === 'rainbow' ? 46 : it.tone === 'gold' ? 42 : 36;
+    g.save();
+    g.globalAlpha = a;
+    g.translate(cx, cy); g.scale(s, s); g.rotate(-0.05);
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.font = `italic 900 ${big}px ${FONT}`;
+    let fill;
+    if (it.tone === 'rainbow') {
+      fill = g.createLinearGradient(-130, 0, 130, 0);
+      for (let i = 0; i <= 6; i++) fill.addColorStop(i / 6, rgba(hueRgb(now / 4 + i * 55)));
+    } else {
+      const c = it.tone === 'gold' ? GOLD : it.tone === 'orange' ? [255, 160, 90] : SKY;
+      fill = g.createLinearGradient(0, -big / 2, 0, big / 2);
+      fill.addColorStop(0, '#ffffff'); fill.addColorStop(1, rgba(c));
+    }
+    g.shadowColor = it.tone === 'rainbow' ? 'rgba(255,255,255,0.9)' : 'rgba(255,208,77,0.7)'; g.shadowBlur = it.tone === 'sky' ? 8 : 20;
+    g.lineJoin = 'round'; g.strokeStyle = '#1b1030'; g.lineWidth = 9;
+    g.strokeText(it.word, 0, 0);
+    g.shadowBlur = 0;
+    g.fillStyle = fill; g.fillText(it.word, 0, 0);
+    g.font = `800 18px ${FONT}`;
+    outlined(g, it.sub, 0, big * 0.62 + 6, '#fff7e0', 5);
     g.restore();
   }
 
@@ -324,6 +455,13 @@ export class Fx {
     }
     this.parts = keep;
   }
+}
+
+/** 色相（0〜360）→ 明るめの虹色 [r,g,b]（彩度 0.9・明度 0.66 の HSL） */
+function hueRgb(h) {
+  const S = 0.9, L = 0.66, a = S * Math.min(L, 1 - L);
+  const f = (n) => { const k = (n + h / 30) % 12; return Math.round(255 * (L - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))); };
+  return [f(0), f(8), f(4)];
 }
 
 function outlined(g, text, x, y, fill, w) {
