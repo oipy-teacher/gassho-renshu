@@ -234,13 +234,15 @@ export class Roll {
 
     // お手本の音符
     const results = s.results;
+    // 聞き直し中は、再生位置を過ぎた音符だけ判定の色（歌ったときと同じ見え方で、あとから色がつく）
+    const graded = (n) => { const r = results && results.get(n.id); return r && (s.revealSec == null || n.endSec <= s.revealSec + 1e-6) ? r : null; };
     const r = Math.min(5, row * 0.3);
     for (const n of this.notes) {
       const xa = this.xOf(n.startSec, view), xb = this.xOf(n.endSec, view);
       if (xb < this.keyW || xa > W) continue;
       const y = this.yOf(n.midi);
       const hh = Math.max(6, row * 0.7);
-      const res = results && results.get(n.id);
+      const res = graded(n);
       const xs = Math.max(this.keyW, xa + 1), xe = xb - 1.5;
       if (xe <= xs) continue;
       const active = s.activeId === n.id;
@@ -272,7 +274,7 @@ export class Roll {
         if (x < this.keyW - 4) break;
         if (x > lim || f.midi == null) continue;
         const t = this.noteAt(f.sec);
-        if (!t || (results && results.has(t.id))) continue;
+        if (!t || graded(t)) continue;
         let c = (f.midi - t.midi) * 100; c -= 1200 * Math.round(c / 1200); c = Math.abs(c);
         if (c > 50) continue;
         const hh = Math.max(6, row * 0.7);

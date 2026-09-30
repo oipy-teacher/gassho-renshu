@@ -96,7 +96,7 @@ export class ClipRecorder {
  * 1回分の練習の記録（声・音程の線・採点）
  * 時刻はすべて「タイミングの補正（ユーザー設定）を入れる前」の楽譜の秒で持つ。聞き直すときに、その時点の補正値を当てる。
  */
-export function makeTake({ scoreId, trackKey, trackName, mode, tempo, rangeText, summary, clips, frames, userOffsetMs, now = Date.now() }) {
+export function makeTake({ scoreId, trackKey, trackName, mode, tempo, rangeText, summary, clips, frames, userOffsetMs, expr = [], now = Date.now() }) {
   const packed = clips.map((c) => ({ sec0: c.sec0, r: c.r, sr: c.sr, n: c.pcm.length, data: adpcmEncode(c.pcm) }));
   const fs = [...frames].sort((a, b) => a.sec - b.sec);
   const sec = Float32Array.from(fs, (f) => f.sec);
@@ -105,6 +105,7 @@ export function makeTake({ scoreId, trackKey, trackName, mode, tempo, rangeText,
   const take = {
     id: `${scoreId}|${now}`, scoreId, trackKey, trackName, createdAt: now, mode, tempo, rangeText,
     score: summary.score, comments: summary.comments, results, frames: { sec, midi }, clips: packed, userOffsetMs,
+    expr, // 息継ぎ・強弱の判定 [{kind, ok, sec, wedge?, value?, from?, to?}]（聞き直しで同じ演出を出す）
   };
   take.sizeBytes = packed.reduce((a, c) => a + c.data.length, 0) + sec.byteLength + midi.byteLength;
   take.startSec = Math.min(...packed.map((c) => c.sec0), ...(sec.length ? [sec[0]] : []));

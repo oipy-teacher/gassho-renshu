@@ -905,6 +905,17 @@ function prepJudges(run, seg) {
   run.judge = cuesOn() ? { list: judgeTargets(roll.expr, seg.startSec, seg.noteEnd, beatSecAt), done: new Set() } : null;
   // 1音ずつの判定（歌い終わった直後に色がつく・コンボ）と、フレーズ（息継ぎ・休符まで）の一語
   const notes = [...seg.notes].sort((a, b) => a.startSec - b.startSec);
+  const phrases = buildPhrases(notes);
+  run.live = {
+    notes, idx: 0, from: 0, res: new Map(),
+    phrases: phrases.map((ns) => ({ ids: ns.map((n) => n.id), last: notes.indexOf(ns[ns.length - 1]), done: false, lenQ: ns.reduce((a, n) => a + n.durQ, 0) })),
+  };
+  run.exprLog = run.exprLog || [];
+  run.segExpr = run.segExpr || new Map();
+  run.segExpr.set(run.segIdx, EMPTY_TALLY());
+}
+/** フレーズ = 息継ぎ（書きこみ・楽譜）か、八分休符以上の休みで区切った音符のかたまり */
+function buildPhrases(notes) {
   const cuts = new Set((S.expr ? S.expr.breaths : []).map((b) => b.q.toFixed(4)));
   const phrases = [];
   let cur = [];
@@ -914,13 +925,15 @@ function prepJudges(run, seg) {
     cur.push(n);
   });
   if (cur.length) phrases.push(cur);
-  run.live = {
-    notes, idx: 0, from: 0, res: new Map(),
-    phrases: phrases.map((ns) => ({ ids: ns.map((n) => n.id), last: notes.indexOf(ns[ns.length - 1]), done: false, lenQ: ns.reduce((a, n) => a + n.durQ, 0) })),
-  };
-  run.segExpr = run.segExpr || new Map();
-  run.segExpr.set(run.segIdx, EMPTY_TALLY());
+  return phrases;
 }
+/** フレーズの点（音符の長さの重みつき平均。採点と同じ重み） */
+function phraseScore(rs, r) {
+  const w = (x) => (x.weight != null ? x.weight : Math.min((x.endSec - x.startSec) / r, 2) + 0.25);
+  const tw = rs.reduce((a, x) => a + w(x), 0);
+  return tw ? rs.reduce((a, x) => a + w(x) * (x.score || 0), 0) / tw : 0;
+}
+
 /** 歌い終わった音符から順に判定（採点と同じ関数なので、あとの ◎○△× と食い違わない） */
 function checkLive(run) {
   const L = run.live, cap = run.cap;
@@ -942,8 +955,7 @@ function checkLive(run) {
     p.done = true;
     const rs = p.ids.map((id) => L.res.get(id)).filter(Boolean);
     if (!rs.length || (p.ids.length < 2 && p.lenQ < 1)) continue;
-    const w = rs.reduce((a, r) => a + r.weight, 0);
-    const score = rs.reduce((a, r) => a + r.weight * (r.score || 0), 0) / w;
+    const score = phraseScore(rs, run.r);
     p.score = score;
     if (karaoke) fx.phrase(now, phraseWord(score), fxBox());
   }
@@ -963,6 +975,7 @@ function checkJudges(run, final) {
     if (!res) continue;
     tally[t.kind][1]++;
     if (res.ok) tally[t.kind][0]++;
+    run.exprLog.push({ kind: t.kind, ok: res.ok, sec: t.evalSec, wedge: t.wedge, value: t.value, from: t.from, to: t.to, seg: run.segIdx });
     if (settings.fx === 'karaoke') fx.judge(performance.now(), t.kind, res.ok, t, fxBox());
     else if (res.ok) toast(t.kind === 'breath' ? 'ナイス息継ぎ！' : '強弱、決まった！', 1200);
   }
@@ -1080,6 +1093,7 @@ async function saveTake(run, sum) {
   const take = makeTake({
     scoreId: S.rec.id, trackKey: S.track.key, trackName: S.track.name, mode: sum.modeText, tempo: run.r,
     rangeText: sum.rangeText, summary: sum, clips, frames: kept.flatMap((k) => k.frames), userOffsetMs: settings.latencyMs,
+    expr: (run.exprLog || []).filter((e) => run.segResults.has(e.seg)).map(({ seg, ...e }) => e),
   });
   try {
     await putTake(take);
@@ -1270,6 +1284,7 @@ function frame(now) {
       S.view = run.startSec + Math.max(0, a - run.t0) * run.r;
       activeOn = true;
       if (run.kind === 'review') {
+        replayFx(run);
         clip = true;
         const f = nearestFrame(S.voice, S.view);
         S.liveMidi = f && f.midi != null ? f.midi : null; S.liveAt = performance.now();
@@ -1372,7 +1387,8 @@ function draw(o = {}) {
     view: S.view,
     cue,
     fx: settings.fx,
-    gold: cuesOn() && run && run.cap && o.clip ? { r: run.r } : null,
+    gold: cuesOn() && run && ((run.cap && o.clip) || run.kind === 'review') ? { r: run.r } : null,
+    revealSec: run && run.kind === 'review' ? S.view : null,
     shake: karaoke ? fx.shake(now) : null,
     running,
     editing: S.editing,
@@ -1509,6 +1525,36 @@ function nearestFrame(frames, sec) {
   return f && Math.abs(f.sec - sec) < 0.03 ? f : null;
 }
 
+/** 聞き直し: 録音したときの判定を、再生位置に合わせてもう一度出す（色・コンボ・フレーズの一語・息継ぎと強弱） */
+function prepReplay(run, take, fromSec, toSec) {
+  const notes = S.notes.filter((n) => S.results.has(n.id) && n.endSec > fromSec + 1e-6 && n.startSec < toSec + 1e-6).sort((a, b) => a.startSec - b.startSec);
+  const phrases = buildPhrases(notes).map((ns) => ({ ns, done: false }));
+  const expr = (take.expr || []).filter((e) => e.sec > fromSec).sort((a, b) => a.sec - b.sec);
+  run.replay = { notes, idx: 0, phrases, expr, eidx: 0 };
+}
+function replayFx(run) {
+  const P = run.replay;
+  if (!P || !cuesOn()) return;
+  const now = performance.now(), karaoke = settings.fx === 'karaoke';
+  const at = S.view;
+  while (P.idx < P.notes.length && P.notes[P.idx].endSec <= at) {
+    const n = P.notes[P.idx++], res = S.results.get(n.id);
+    if (karaoke && res) fx.note(now, res.grade, roll.xOf(n.endSec, S.view), roll.yOf(n.midi), fxBox());
+  }
+  for (const p of P.phrases) {
+    if (p.done || p.ns[p.ns.length - 1].endSec > at) continue;
+    p.done = true;
+    const rs = p.ns.map((n) => ({ ...S.results.get(n.id), startSec: n.startSec, endSec: n.endSec })).filter((x) => x.status);
+    const lenQ = p.ns.reduce((a, n) => a + n.durQ, 0);
+    if (!rs.length || (p.ns.length < 2 && lenQ < 1)) continue;
+    if (karaoke) fx.phrase(now, phraseWord(phraseScore(rs, run.r)), fxBox());
+  }
+  while (P.eidx < P.expr.length && P.expr[P.eidx].sec <= at) {
+    const e = P.expr[P.eidx++];
+    if (karaoke) fx.judge(now, e.kind, e.ok, e, fxBox());
+  }
+}
+
 function startReview(q0) {
   const rv = S.review;
   if (!rv) return;
@@ -1541,6 +1587,7 @@ function startReview(q0) {
     ]);
   }
   S.run = { kind: 'review', r, phase: 'play', startSec, t0, end: t0 + (endSec - startSec) / r + 0.4 };
+  prepReplay(S.run, rv.take, startSec, endSec);
   setGo(true);
 }
 
